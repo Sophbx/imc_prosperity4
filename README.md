@@ -11,7 +11,7 @@ Round0/
 │   ├── prices_round_0_day_-2.csv
 │   ├── trades_round_0_day_-1.csv
 │   └── trades_round_0_day_-2.csv
-├── trader.py               # Our trading algorithm for the Tutorial Round
+├── trader.py               # Our first trading algorithm for the Tutorial Round
 └── Tutorial/
     ├── tutorial.tex         # LaTeX source for the strategy guide
     └── tutorial.pdf         # Compiled PDF — read this first!
@@ -21,7 +21,7 @@ Round0/
 
 ### `trader.py` — Trading Algorithm
 
-This is the algorithm we submit to the Prosperity platform. It trades two products:
+This is the first algorithm we submit to the Prosperity platform. It trades two products:
 
 - **EMERALDS** (position limit: 80) — Extremely stable asset, fair value locked at 10,000. Strategy: static fair-value market making with a tight spread (9,998 / 10,002).
 - **TOMATOES** (position limit: 80) — Volatile, trending asset. Strategy: dynamic fair-value tracking via EMA (alpha=0.3) + inventory-skewed market making.
@@ -42,5 +42,3 @@ A comprehensive write-up covering:
 - Code walkthrough of `trader.py`
 - Common pitfalls to avoid
 - Tips for preparing for future rounds
-
-**If you're new to the project, start by reading the PDF.**
