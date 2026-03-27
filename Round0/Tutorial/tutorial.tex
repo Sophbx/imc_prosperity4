@@ -1,0 +1,749 @@
+\documentclass[11pt, letterpaper]{article}
+
+% ============================================================
+% PACKAGES
+% ============================================================
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{float}
+\usepackage{tcolorbox}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+
+% ============================================================
+% STYLING
+% ============================================================
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!70!black,
+    urlcolor=blue!70!black,
+    citecolor=blue!70!black
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small IMC Prosperity 4 --- Tutorial Round Guide}
+\fancyhead[R]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\definecolor{codebg}{RGB}{245,245,245}
+\definecolor{codeframe}{RGB}{200,200,200}
+\definecolor{keywordcolor}{RGB}{0,100,180}
+\definecolor{stringcolor}{RGB}{163,21,21}
+\definecolor{commentcolor}{RGB}{0,128,0}
+
+\lstset{
+    language=Python,
+    backgroundcolor=\color{codebg},
+    frame=single,
+    rulecolor=\color{codeframe},
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{keywordcolor}\bfseries,
+    stringstyle=\color{stringcolor},
+    commentstyle=\color{commentcolor}\itshape,
+    breaklines=true,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    numbersep=8pt,
+    tabsize=4,
+    showstringspaces=false,
+    xleftmargin=1.5em,
+    framexleftmargin=1.5em,
+}
+
+\tcbuselibrary{skins, breakable}
+
+\newtcolorbox{keyinsight}[1][]{
+    colback=blue!5!white,
+    colframe=blue!60!black,
+    fonttitle=\bfseries,
+    title=Key Insight,
+    #1
+}
+
+\newtcolorbox{warning}[1][]{
+    colback=red!5!white,
+    colframe=red!60!black,
+    fonttitle=\bfseries,
+    title=Warning,
+    #1
+}
+
+\newtcolorbox{tip}[1][]{
+    colback=green!5!white,
+    colframe=green!50!black,
+    fonttitle=\bfseries,
+    title=Tip,
+    #1
+}
+
+% ============================================================
+% TITLE
+% ============================================================
+\title{
+    \vspace{-1cm}
+    \textbf{IMC Prosperity 4: Tutorial Round Guide} \\[0.3cm]
+    \large A Quantitative Trading Primer with Worked Strategies
+}
+\author{Prepared for the Prosperity 4 Competition}
+\date{Spring 2026}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ============================================================
+% SECTION 1: THE COMPETITION
+% ============================================================
+\section{Understanding the Competition}
+
+\subsection{What Is Prosperity?}
+
+IMC Prosperity is an algorithmic trading competition where you write a Python program (a \texttt{Trader} class) that trades against bots on a simulated exchange. Your goal is to maximize profit (PnL), measured in XIRECs (the in-game currency). Each round introduces new products with different price dynamics, and your algorithm must adapt.
+
+\subsection{How the Simulation Works}
+
+Your algorithm's \texttt{run()} method is called once per \textbf{iteration}:
+\begin{itemize}
+    \item \textbf{Testing}: 1{,}000 iterations on sample data (instant feedback).
+    \item \textbf{Scored run}: 10{,}000 iterations on unseen data (determines your PnL).
+\end{itemize}
+
+Each iteration, the platform gives you a \texttt{TradingState} object containing:
+\begin{enumerate}
+    \item The current \textbf{order book} for each product (all bot quotes).
+    \item Your \textbf{position} in each product (how many units you hold).
+    \item Recent \textbf{trades} (yours and the market's).
+    \item A \textbf{traderData} string you returned last iteration (for state persistence).
+\end{enumerate}
+
+You return a dictionary of \texttt{Order} objects. Orders that cross existing bot quotes execute immediately; the rest sit on the book for bots to potentially trade against, then are cancelled if unfilled.
+
+\begin{keyinsight}
+The simulation is \textbf{stateless} (runs on AWS Lambda). Class variables and global state may not persist between calls. Always use \texttt{traderData} (serialized to a string via \texttt{json} or \texttt{jsonpickle}) to carry information across iterations.
+\end{keyinsight}
+
+
+% ============================================================
+% SECTION 2: CORE TRADING CONCEPTS
+% ============================================================
+\section{Core Trading Concepts}
+
+This section covers the essential market microstructure concepts you need. If you've taken a finance or market microstructure course, skim for Prosperity-specific details.
+
+\subsection{The Order Book}
+
+An \textbf{order book} collects all outstanding buy and sell orders for a product:
+
+\begin{center}
+\begin{tabular}{ccc}
+\toprule
+\textbf{Bid (Buy) Side} & \textbf{Price} & \textbf{Ask (Sell) Side} \\
+\midrule
+14 & 9{,}992 & --- \\
+29 & 9{,}990 & --- \\
+--- & 10{,}008 & 14 \\
+--- & 10{,}010 & 29 \\
+\bottomrule
+\end{tabular}
+\captionof{table}{Typical EMERALDS order book from the sample data.}
+\end{center}
+
+Key definitions:
+\begin{itemize}
+    \item \textbf{Best bid} $b^* = \max\{$bid prices$\}$: the highest price someone is willing to pay (here, 9{,}992).
+    \item \textbf{Best ask} $a^* = \min\{$ask prices$\}$: the lowest price someone is willing to sell at (here, 10{,}008).
+    \item \textbf{Spread} $s = a^* - b^*$: the gap between best ask and best bid (here, 16).
+    \item \textbf{Mid-price} $m = \frac{b^* + a^*}{2}$: the midpoint, our simplest fair value estimate (here, 10{,}000).
+\end{itemize}
+
+\subsection{Order Matching and Execution}
+
+Orders execute via \textbf{price-time priority}:
+\begin{enumerate}
+    \item A buy order matches against the \emph{lowest-priced} existing sell order first.
+    \item A sell order matches against the \emph{highest-priced} existing buy order first.
+    \item At the same price, the \emph{oldest} order fills first.
+    \item Execution happens at the \textbf{resting order's price} (the order already on the book).
+\end{enumerate}
+
+\begin{keyinsight}
+In Prosperity, your orders arrive \textbf{instantaneously}---no latency. If you send a buy at 10{,}008 and there's a sell at 10{,}008, you will get filled. No bot can ``front-run'' you.
+\end{keyinsight}
+
+\subsection{Position and PnL}
+
+Your \textbf{position} in a product is how many units you hold:
+\begin{equation}
+    \text{position}_{t+1} = \text{position}_t + \text{quantity bought} - \text{quantity sold}
+\end{equation}
+
+A positive position is \textbf{long} (you own the asset); negative is \textbf{short} (you owe the asset). Your PnL at any point is:
+\begin{equation}
+    \text{PnL} = \underbrace{\sum_{\text{sells}} p_{\text{sell}} \cdot q_{\text{sell}} - \sum_{\text{buys}} p_{\text{buy}} \cdot q_{\text{buy}}}_{\text{realized PnL from trades}} + \underbrace{\text{position} \times m_{\text{current}}}_{\text{unrealized PnL from inventory}}
+\end{equation}
+
+where $m_{\text{current}}$ is the current mid-price. At simulation end, your final PnL includes the mark-to-market value of any remaining position.
+
+\subsection{Position Limits}\label{sec:pos-limits}
+
+Each product has a \textbf{position limit} $L$ (80 for both tutorial products). This constrains:
+\begin{equation}
+    -L \leq \text{position} \leq L
+\end{equation}
+
+The exchange enforces this \emph{prospectively}: before processing your orders, it checks whether your orders \emph{could} push you past the limit if they all filled:
+
+\begin{warning}
+If the total buy quantity across all your buy orders for a product would cause $\text{position} + \sum q_{\text{buy}} > L$, \textbf{all orders} for that product are rejected. Same for sells: if $\text{position} - \sum q_{\text{sell}} < -L$, all orders rejected. This check applies to buys and sells \emph{independently}.
+\end{warning}
+
+Therefore, you must cap your order volumes:
+\begin{align}
+    \text{max\_buy}  &= L - \text{position} \label{eq:max-buy} \\
+    \text{max\_sell} &= L + \text{position} \label{eq:max-sell}
+\end{align}
+
+\textbf{Example}: If $L = 80$ and position $= 30$:
+\begin{itemize}
+    \item max\_buy $= 80 - 30 = 50$ (buying 50 reaches position $+80$).
+    \item max\_sell $= 80 + 30 = 110$ (selling 110 reaches position $-80$).
+\end{itemize}
+
+
+% ============================================================
+% SECTION 3: DATA ANALYSIS
+% ============================================================
+\section{Analyzing the Sample Data}
+
+Before writing any code, you should analyze the provided CSV files to understand each product's price dynamics. This is the single most important step.
+
+\subsection{Available Data}
+
+The tutorial round provides four files:
+\begin{itemize}
+    \item \texttt{prices\_round\_0\_day\_-1.csv} and \texttt{day\_-2.csv}: Order book snapshots every 100ms (10{,}000 rows per product per day).
+    \item \texttt{trades\_round\_0\_day\_-1.csv} and \texttt{day\_-2.csv}: Every trade that occurred.
+\end{itemize}
+
+\subsection{What to Look For}
+
+For each product, you want to determine:
+
+\begin{enumerate}
+    \item \textbf{Fair value}: What is the ``true'' price? Is it constant or shifting?
+    \item \textbf{Volatility}: How much does the price move? (standard deviation)
+    \item \textbf{Spread}: How wide is the bid-ask spread? Can you quote inside it?
+    \item \textbf{Autocorrelation}: Do price changes predict future changes? (mean-reverting vs.\ trending)
+    \item \textbf{Volume}: How often do trades occur? What sizes?
+\end{enumerate}
+
+\subsection{EMERALDS: The Stationary Asset}
+
+Analysis of the sample data reveals:
+
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Mean mid-price & 10{,}000.00 \\
+Std.\ deviation & 0.72 \\
+\% of time at exactly 10{,}000 & 96.7\% \\
+Typical spread & 16 \\
+Lag-1 autocorrelation of $\Delta p$ & $-0.49$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{keyinsight}
+EMERALDS is a textbook \textbf{stationary, mean-reverting} asset. Fair value is a known constant. The negative autocorrelation ($-0.49$) means any deviation from 10{,}000 is quickly corrected. This makes it ideal for a simple market-making strategy.
+\end{keyinsight}
+
+\subsection{TOMATOES: The Trending Asset}
+
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Mean mid-price (Day $-2$) & 5{,}008 \\
+Mean mid-price (Day $-1$) & 4{,}978 \\
+Day-over-day shift & $-30$ \\
+Std.\ deviation & $\sim$20 \\
+Typical spread & 13--14 \\
+Lag-1 autocorrelation of $\Delta p$ & $-0.42$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{keyinsight}
+TOMATOES \textbf{trends} at longer horizons (30-point shift between days, 15--30 intra-day) but is mean-reverting at short horizons ($-0.42$ autocorrelation). A static fair value will fail; you need a \textbf{dynamic estimate} that adapts to the drift.
+\end{keyinsight}
+
+
+% ============================================================
+% SECTION 4: STRATEGY - MARKET MAKING
+% ============================================================
+\section{Strategy: Market Making}
+
+Market making is the core strategy for both products. The idea is simple: simultaneously offer to buy slightly below fair value and sell slightly above it, capturing the \textbf{spread} as profit.
+
+\subsection{The Basic Idea}
+
+Suppose fair value is $V$ and you post:
+\begin{align}
+    \text{Bid (buy) at } &\; V - \delta \\
+    \text{Ask (sell) at } &\; V + \delta
+\end{align}
+
+where $\delta$ is your \textbf{half-spread}. If both sides fill, your profit per unit is:
+\begin{equation}
+    \pi = (V + \delta) - (V - \delta) = 2\delta
+\end{equation}
+
+\textbf{Example}: For EMERALDS with $V = 10{,}000$ and $\delta = 2$:
+\begin{itemize}
+    \item Buy at 9{,}998, sell at 10{,}002.
+    \item Profit per round trip: $2 \times 2 = 4$ XIRECs per unit.
+\end{itemize}
+
+\subsection{Why It Works Here}
+
+The bots quote a spread of 16 for EMERALDS (bid 9{,}992 / ask 10{,}008). Our spread of 4 offers \emph{strictly better} prices:
+\begin{itemize}
+    \item A bot wanting to \textbf{sell} gets 9{,}998 from us vs.\ 9{,}992 from other bots: \textbf{+6 better}.
+    \item A bot wanting to \textbf{buy} pays 10{,}002 to us vs.\ 10{,}008 from other bots: \textbf{6 cheaper}.
+\end{itemize}
+
+Due to price-time priority, our orders sit at the top of the book and get filled first.
+
+\subsection{Choosing the Half-Spread $\delta$}
+
+The optimal $\delta$ balances two forces:
+
+\begin{equation}
+    \underbrace{\text{tighter spread}}_{\delta \downarrow} \implies
+    \begin{cases}
+        \text{More fills (higher volume)} & \uparrow \\
+        \text{Less profit per fill} & \downarrow \\
+        \text{More adverse selection risk} & \uparrow
+    \end{cases}
+\end{equation}
+
+\textbf{Adverse selection}: If a bot trades against you, it might be because the price is about to move against your new position. With EMERALDS (near-zero volatility), this risk is negligible, so we can use a tight spread ($\delta = 2$). With TOMATOES (volatile), we use a wider spread ($\delta = 3$) for safety.
+
+\subsection{The Two-Phase Approach}
+
+Our algorithm uses a two-phase strategy each iteration:
+
+\begin{enumerate}
+    \item \textbf{Phase 1 --- Take (aggressive orders):} Immediately buy any asks below $V$ and sell to any bids above $V$. These are guaranteed-profitable trades against mispriced quotes.
+
+    \item \textbf{Phase 2 --- Make (passive orders):} Post resting limit orders at $V \pm \delta$ with whatever position capacity remains. These sit on the book for bots to fill.
+\end{enumerate}
+
+We process ``take'' first because those orders consume volume from the existing book, and we need to track exactly how much position capacity they use before sizing our ``make'' orders.
+
+
+% ============================================================
+% SECTION 5: FAIR VALUE ESTIMATION
+% ============================================================
+\section{Fair Value Estimation}
+
+\subsection{EMERALDS: Constant Fair Value}
+
+For EMERALDS, the data overwhelmingly shows $V = 10{,}000$. No estimation needed.
+
+\subsection{TOMATOES: Exponential Moving Average (EMA)}
+
+For a trending asset, we need a \textbf{dynamic} fair value estimate. The Exponential Moving Average (EMA) is a standard tool:
+
+\begin{equation}
+    \text{EMA}_t = \alpha \cdot x_t + (1 - \alpha) \cdot \text{EMA}_{t-1}
+    \label{eq:ema}
+\end{equation}
+
+where:
+\begin{itemize}
+    \item $x_t$ is the current observation (mid-price at iteration $t$).
+    \item $\alpha \in (0, 1)$ is the \textbf{smoothing factor}.
+    \item $\text{EMA}_{t-1}$ is the previous estimate.
+\end{itemize}
+
+\subsubsection{Choosing $\alpha$}
+
+The effective lookback window of an EMA is approximately $\frac{2}{\alpha} - 1$ observations:
+
+\begin{center}
+\begin{tabular}{ccc}
+\toprule
+$\alpha$ & Effective lookback & Behavior \\
+\midrule
+0.1 & $\sim$19 observations & Very smooth, slow to react \\
+0.3 & $\sim$5.7 observations & Moderate (our choice) \\
+0.5 & $\sim$3 observations & Responsive, noisy \\
+0.9 & $\sim$1.2 observations & Nearly raw price \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+We use $\alpha = 0.3$ as a balance: responsive enough to track TOMATOES' intra-day trends (which develop over 50--200 ticks) but smooth enough to filter tick-by-tick noise.
+
+\subsubsection{Why EMA Over Simple Moving Average?}
+
+\begin{enumerate}
+    \item \textbf{Recency bias}: EMA weights recent data exponentially more, which is desirable for a trending asset.
+    \item \textbf{Constant memory}: EMA requires storing only one number ($\text{EMA}_{t-1}$), while SMA requires storing the entire window. This matters because \texttt{traderData} is limited to 50{,}000 characters.
+    \item \textbf{No window artifacts}: SMA can ``jump'' when old data leaves the window; EMA transitions smoothly.
+\end{enumerate}
+
+
+% ============================================================
+% SECTION 6: INVENTORY MANAGEMENT
+% ============================================================
+\section{Inventory Management}
+
+\subsection{The Problem}
+
+A pure market maker posts symmetric quotes around fair value. But if the price trends, one side fills more than the other, building up a large position. For example:
+\begin{itemize}
+    \item Price rises steadily $\implies$ our sell orders keep filling $\implies$ we go short.
+    \item If the price keeps rising, our short position loses money.
+\end{itemize}
+
+\subsection{Inventory Skew}
+
+The standard solution is to \textbf{skew} our quotes based on our current position. We shift both bid and ask by an amount proportional to our inventory:
+
+\begin{equation}
+    \text{skew} = -\kappa \cdot \text{position}
+\end{equation}
+
+where $\kappa > 0$ is the skew intensity. Then:
+\begin{align}
+    \text{bid price} &= V - \delta + \text{skew} \\
+    \text{ask price} &= V + \delta + \text{skew}
+\end{align}
+
+\subsubsection{How It Works}
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Position} & \textbf{Skew} ($\kappa=0.05$) & \textbf{Bid} & \textbf{Ask} \\
+\midrule
+$+40$ (long) & $-2$ & $V - 5$ & $V + 1$ \\
+$0$ (flat) & $0$ & $V - 3$ & $V + 3$ \\
+$-40$ (short) & $+2$ & $V - 1$ & $V + 5$ \\
+\bottomrule
+\end{tabular}
+\captionof{table}{Inventory skew for TOMATOES ($\delta = 3$, $\kappa = 0.05$).}
+\end{center}
+
+\begin{itemize}
+    \item \textbf{Long position}: Skew is negative, shifting quotes \emph{down}. The ask drops closer to fair value, making it easier to sell and unwind the position. The bid moves further away, discouraging more buying.
+    \item \textbf{Short position}: Skew is positive, shifting quotes \emph{up}. The bid rises closer to fair value, making it easier to buy and cover. The ask moves further away, discouraging more selling.
+    \item \textbf{Flat}: Symmetric quotes, pure spread capture.
+\end{itemize}
+
+This creates a \textbf{mean-reverting force} on inventory: the further we deviate from zero, the stronger the pull back.
+
+\subsection{Why EMERALDS Doesn't Need Skew}
+
+EMERALDS has near-zero volatility. Even at maximum inventory ($\pm 80$), the mark-to-market risk is:
+\begin{equation}
+    \text{Risk} = |\text{position}| \times \sigma \approx 80 \times 0.72 \approx 57.6 \text{ XIRECs}
+\end{equation}
+
+This is negligible compared to the spread profit. For TOMATOES with $\sigma \approx 20$:
+\begin{equation}
+    \text{Risk} = 80 \times 20 = 1{,}600 \text{ XIRECs}
+\end{equation}
+
+This is substantial, so inventory management is essential.
+
+
+% ============================================================
+% SECTION 7: CODE WALKTHROUGH
+% ============================================================
+\section{Code Walkthrough}
+
+This section walks through the key parts of \texttt{trader.py}.
+
+\subsection{The \texttt{run()} Method}
+
+\begin{lstlisting}[caption={Main entry point called each iteration.}]
+def run(self, state: TradingState):
+    # Restore state from previous iteration
+    trader_data = {}
+    if state.traderData:
+        try:
+            trader_data = json.loads(state.traderData)
+        except (json.JSONDecodeError, TypeError):
+            trader_data = {}
+
+    result = {}
+    for product in state.order_depths:
+        if product == "EMERALDS":
+            result[product] = self.trade_emeralds(state)
+        elif product == "TOMATOES":
+            result[product], trader_data = self.trade_tomatoes(
+                state, trader_data
+            )
+
+    traderData = json.dumps(trader_data)
+    conversions = 0
+    return result, conversions, traderData
+\end{lstlisting}
+
+\textbf{Key points}:
+\begin{itemize}
+    \item Lines 2--7: Deserialize persistent state. The \texttt{try/except} handles the first iteration (empty string) and any corruption.
+    \item Lines 9--15: Dispatch to product-specific strategies. Each returns a list of \texttt{Order} objects.
+    \item Line 17: Serialize state back to a string for next iteration.
+    \item Line 19: Return the three required values: orders, conversions (0 for tutorial), and trader data.
+\end{itemize}
+
+\subsection{EMERALDS: Taking Mispriced Orders}
+
+\begin{lstlisting}[caption={Phase 1: Buy cheap asks and sell to expensive bids.}]
+# Buy any sell orders below fair value (cheapest first)
+if order_depth.sell_orders:
+    for ask_price in sorted(order_depth.sell_orders.keys()):
+        if ask_price < fair_value and buy_vol < max_buy:
+            available = -order_depth.sell_orders[ask_price]
+            qty = min(available, max_buy - buy_vol)
+            if qty > 0:
+                orders.append(Order(product, ask_price, qty))
+                buy_vol += qty
+\end{lstlisting}
+
+\textbf{Key points}:
+\begin{itemize}
+    \item \texttt{sell\_orders} values are \emph{negative} (convention), so we negate to get the actual volume (line 5).
+    \item We iterate from lowest to highest ask: grab the cheapest deals first.
+    \item \texttt{qty} is capped by both available volume and our remaining position capacity (line 6).
+    \item We accumulate \texttt{buy\_vol} to ensure total buys never exceed \texttt{max\_buy} (Eq.~\ref{eq:max-buy}).
+\end{itemize}
+
+\subsection{EMERALDS: Passive Market Making}
+
+\begin{lstlisting}[caption={Phase 2: Post resting orders inside the bot spread.}]
+mm_bid_price = fair_value - 2   # 9,998
+mm_ask_price = fair_value + 2   # 10,002
+
+remaining_buy = max_buy - buy_vol
+remaining_sell = max_sell - sell_vol
+
+if remaining_buy > 0:
+    orders.append(Order(product, mm_bid_price, remaining_buy))
+if remaining_sell > 0:
+    orders.append(Order(product, mm_ask_price, -remaining_sell))
+\end{lstlisting}
+
+We use all remaining position capacity for market-making orders. The \texttt{remaining\_*} calculation ensures we never exceed position limits even combining ``take'' and ``make'' volumes.
+
+\subsection{TOMATOES: EMA Fair Value}
+
+\begin{lstlisting}[caption={Dynamic fair value estimation using EMA.}]
+mid_price = (best_bid + best_ask) / 2
+
+alpha = 0.3
+if ema_key in trader_data:
+    ema = alpha * mid_price + (1 - alpha) * trader_data[ema_key]
+else:
+    ema = mid_price  # Initialize on first iteration
+
+trader_data[ema_key] = ema
+fair_value = round(ema)
+\end{lstlisting}
+
+This implements Equation~\ref{eq:ema}. The EMA value is stored in \texttt{trader\_data} (a Python dict serialized to JSON) so it persists across the stateless iterations.
+
+\subsection{TOMATOES: Inventory Skew}
+
+\begin{lstlisting}[caption={Position-based quote adjustment.}]
+skew = -round(position * 0.05)
+mm_half_spread = 3
+
+mm_bid_price = fair_value - mm_half_spread + skew
+mm_ask_price = fair_value + mm_half_spread + skew
+\end{lstlisting}
+
+With $\kappa = 0.05$ and position $= +40$: skew $= -\text{round}(2.0) = -2$, so bid drops to $V - 5$ and ask drops to $V + 1$, aggressively selling to unwind.
+
+
+% ============================================================
+% SECTION 8: COMMON PITFALLS
+% ============================================================
+\section{Common Pitfalls}
+
+\begin{enumerate}[label=\textbf{\arabic*.}]
+
+    \item \textbf{Exceeding position limits.}
+    If \emph{any} combination of your buy orders could push you past $+L$ (or sell orders past $-L$), the exchange rejects \emph{all} orders for that product. Always compute \texttt{max\_buy} and \texttt{max\_sell} per Equations~\ref{eq:max-buy}--\ref{eq:max-sell} and respect them.
+
+    \item \textbf{Forgetting that sell\_orders quantities are negative.}
+    The \texttt{OrderDepth.sell\_orders} dict stores quantities as negative numbers: \texttt{\{10008: -14\}} means 14 units available at 10{,}008. Always negate before using as a volume.
+
+    \item \textbf{Not sorting the order book.}
+    The \texttt{buy\_orders} and \texttt{sell\_orders} dicts are \emph{not} guaranteed to be sorted. Always use \texttt{sorted()} when iterating price levels.
+
+    \item \textbf{Relying on class variables for state.}
+    The platform runs on AWS Lambda. Class and global variables may reset between iterations. Use \texttt{traderData} for anything that must persist.
+
+    \item \textbf{Timeout.}
+    Your \texttt{run()} must return within 900ms (average $\leq 100$ms). Avoid heavy computation. Our algorithm is $O(k)$ where $k$ is the number of price levels---well within limits.
+
+    \item \textbf{Using a static fair value for TOMATOES.}
+    If you hardcode a fair value for TOMATOES, you will accumulate losing inventory as the price drifts away. Always track the current fair value dynamically.
+
+    \item \textbf{Submitting without testing.}
+    The simulator gives near-instant feedback. Upload, review the logs, iterate. Check for rejection messages (position limit violations), unexpected PnL, and zero-trade iterations.
+
+\end{enumerate}
+
+
+% ============================================================
+% SECTION 9: PREPARING FOR FUTURE ROUNDS
+% ============================================================
+\section{Preparing for Future Rounds}
+
+The tutorial round is a warm-up. Here's what to expect and how to prepare.
+
+\subsection{What Changes Each Round}
+
+\begin{itemize}
+    \item \textbf{New products} with different dynamics (more volatile, correlated, etc.).
+    \item \textbf{Manual trading challenges} (inactive in the tutorial, active from Round 1).
+    \item Potentially \textbf{conversions} (arbitrage between related products via import/export mechanics).
+    \item \textbf{Observations} (external data like sunlight, humidity) that may predict prices.
+\end{itemize}
+
+\subsection{Skills to Develop}
+
+\begin{enumerate}
+
+    \item \textbf{Data analysis workflow.} For every new product, your first step should be analyzing the CSV data:
+    \begin{itemize}
+        \item Plot the mid-price over time. Is it stationary, trending, or mean-reverting?
+        \item Compute the autocorrelation function. Positive at lag 1 $\implies$ momentum; negative $\implies$ mean reversion.
+        \item Check for correlations between products.
+        \item Look at the trade data: who trades with whom, and at what prices?
+    \end{itemize}
+
+    \item \textbf{Fair value models.} Beyond EMA, consider:
+    \begin{itemize}
+        \item \textbf{VWAP} (Volume-Weighted Average Price) of recent trades.
+        \item \textbf{Linear regression} on observable features (e.g., sunlight $\to$ price).
+        \item \textbf{Pairs trading}: if two products are correlated, trade the spread between them.
+    \end{itemize}
+
+    \item \textbf{Risk management.} As products get more volatile:
+    \begin{itemize}
+        \item Use tighter position limits (self-imposed, below the exchange maximum).
+        \item Widen your spread when volatility increases.
+        \item Track realized vs.\ expected PnL to detect strategy breakdown.
+    \end{itemize}
+
+    \item \textbf{Conversion arbitrage.} When products can be ``converted'' (e.g., buy on one island, transport, sell on another), the profit formula is:
+    \begin{equation}
+        \pi_{\text{conversion}} = p_{\text{sell}} - p_{\text{buy}} - \text{transport} - \text{tariffs}
+    \end{equation}
+    Look for cases where this is consistently positive.
+
+    \item \textbf{Signal extraction from observations.} The \texttt{Observation} class may provide data like sunlight or humidity. If you find a statistical relationship between an observation and a product's price, you can use it as a predictive signal. Test with linear regression:
+    \begin{equation}
+        \Delta p_{t+1} = \beta_0 + \beta_1 \cdot \text{observation}_t + \varepsilon_t
+    \end{equation}
+    If $\beta_1$ is statistically significant, use the observation to bias your fair value estimate.
+
+\end{enumerate}
+
+\subsection{Useful Mathematical Tools}
+
+\begin{center}
+\begin{tabular}{lp{7cm}}
+\toprule
+\textbf{Concept} & \textbf{Application in Prosperity} \\
+\midrule
+Exponential Moving Average & Dynamic fair value tracking \\
+Bollinger Bands ($\mu \pm k\sigma$) & Adaptive spread sizing based on volatility \\
+Linear Regression & Predicting price from observations \\
+Correlation / Cointegration & Pairs trading between correlated products \\
+Kelly Criterion & Optimal position sizing given edge and variance \\
+Ornstein--Uhlenbeck Process & Modeling mean-reverting prices \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Practical Workflow for Each Round}
+
+\begin{enumerate}
+    \item \textbf{Download the data capsule} as soon as the round opens.
+    \item \textbf{Analyze} the new products (plots, statistics, correlations).
+    \item \textbf{Identify} the product type: stationary, trending, correlated pair, observation-driven.
+    \item \textbf{Code} the strategy, starting simple (market-making) and adding complexity only if needed.
+    \item \textbf{Test} on the simulator. Check the logs for position limit rejections, zero-PnL iterations, and unexpected behavior.
+    \item \textbf{Iterate}: tune parameters ($\alpha$, $\delta$, $\kappa$), check PnL breakdown by product, and re-test.
+    \item \textbf{Submit} your final version before the deadline. The \emph{last active upload} is used.
+\end{enumerate}
+
+
+% ============================================================
+% SECTION 10: QUICK REFERENCE
+% ============================================================
+\section{Quick Reference}
+
+\subsection{The \texttt{Order} Class}
+
+\begin{lstlisting}
+Order(symbol: str, price: int, quantity: int)
+# quantity > 0: BUY order
+# quantity < 0: SELL order
+\end{lstlisting}
+
+\subsection{The \texttt{run()} Return Signature}
+
+\begin{lstlisting}
+def run(self, state: TradingState):
+    ...
+    return result, conversions, traderData
+    # result: Dict[str, List[Order]]
+    # conversions: int (0 if not using)
+    # traderData: str (JSON-serialized state)
+\end{lstlisting}
+
+\subsection{Key Formulas}
+
+\begin{align}
+    \text{Mid-price: } &\quad m = \frac{b^* + a^*}{2} \\[4pt]
+    \text{EMA update: } &\quad \text{EMA}_t = \alpha \cdot x_t + (1-\alpha) \cdot \text{EMA}_{t-1} \\[4pt]
+    \text{Max buy volume: } &\quad L - \text{position} \\[4pt]
+    \text{Max sell volume: } &\quad L + \text{position} \\[4pt]
+    \text{Inventory skew: } &\quad \text{skew} = -\kappa \cdot \text{position} \\[4pt]
+    \text{MM bid: } &\quad V - \delta + \text{skew} \\[4pt]
+    \text{MM ask: } &\quad V + \delta + \text{skew} \\[4pt]
+    \text{Spread profit: } &\quad \pi = 2\delta \text{ per round trip}
+\end{align}
+
+\subsection{Supported Libraries}
+
+All Python 3.12 standard libraries, plus: \texttt{pandas}, \texttt{numpy}, \texttt{statistics}, \texttt{math}, \texttt{typing}, \texttt{jsonpickle}.
+
+\vfill
+\begin{center}
+\rule{0.5\textwidth}{0.4pt} \\[6pt]
+\textit{Good luck on Intara. May your spreads be tight and your inventory balanced.}
+\end{center}
+
+\end{document}
