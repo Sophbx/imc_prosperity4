@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# Internal working notes — kept local, not shared
+Round0/agents/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Editor
+.vscode/
+.idea/
+*.swp
