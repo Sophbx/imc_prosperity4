@@ -1,44 +1,51 @@
-# IMC Prosperity 4
+# IMC Prosperity 4 — [Team Name TBD]
 
-Our team's repository for the [IMC Prosperity 4](https://prosperity.imc.com/) algorithmic trading competition.
+Our team repository for the [IMC Prosperity 4](https://prosperity.imc.com/) algorithmic trading competition (Spring 2026). We are a group of NYU students competing across all five rounds, tracking our strategies, analyses, and iterations here as we progress.
+
+## The Team
+
+<!-- TODO: replace placeholder rows with real teammate info when we finalise the roster -->
+
+| Name | Role | Links |
+|---|---|---|
+| Nick Zhu | Team Lead / Strategy | [LinkedIn](TBD) · [GitHub](https://github.com/Sophbx) |
+| _Teammate 2_ | _TBD_ | _TBD_ |
+| _Teammate 3_ | _TBD_ | _TBD_ |
+| _Teammate 4_ | _TBD_ | _TBD_ |
 
 ## Repo Structure
 
 ```
 Round0/
-├── Data/                   # Sample market data (prices & trades for Day -2 and Day -1)
-│   ├── prices_round_0_day_-1.csv
-│   ├── prices_round_0_day_-2.csv
-│   ├── trades_round_0_day_-1.csv
-│   └── trades_round_0_day_-2.csv
-├── trader.py               # Our first trading algorithm for the Tutorial Round
-└── Tutorial/
-    ├── tutorial.tex         # LaTeX source for the strategy guide
-    └── tutorial.pdf         # Compiled PDF — read this first!
+├── Data/                      # Sample market data (Day -2 and Day -1)
+├── Tutorial/                  # Strategy guide PDF + LaTeX source
+├── trader.py                  # Original baseline
+├── trader_v2.py ... v4.py     # Early experiments (rejected)
+├── trader_eme6_tomato_v1.py   # EMERALDS spread tuning intermediate
+├── trader_wallmid_v1.py       # First port of Hedgehogs Wall Mid approach
+├── trader_hybrid_v1.py        # Wall Mid (EMERALDS) + EMA/skew (TOMATOES)
+├── trader_phase1_A/B/C.py     # Multi-agent debate Phase 1 outputs
+├── trader_phase2_D/E.py       # Multi-agent debate Phase 2 refinements
+├── trader_final_v1.py         # ★ Current submission
+└── WRITEUP.md                 # Round 0 writeup (teammates, read this!)
 ```
 
-## Round 0 (Tutorial Round)
+## Round 0 — Tutorial Round
 
-### `trader.py` — Trading Algorithm
+Round 0 introduces the basic Prosperity simulation via two products: **EMERALDS** (a perfectly stable asset pinned at fair value 10,000) and **TOMATOES** (a volatile, drifting asset). Both have a position limit of ±80. The round is meant to teach order-book mechanics, position limits, and basic market making — but it also hides more subtle microstructure opportunities than the tutorial lets on.
 
-This is the first algorithm we submit to the Prosperity platform. It trades two products:
+Our final algorithm is `Round0/trader_final_v1.py`. It builds on the Wall Mid concept from [Frankfurt Hedgehogs](https://github.com/timodiehm/imc-prosperity-3) (Prosperity 3 runner-up), and extends their Rainforest Resin / Kelp approach with an adaptive noise-quote tracking mechanism we developed through an internal multi-agent code review. EMERALDS is fully saturated (every catchable historical trade × 7 ticks of edge = 14,945 on the sample days). TOMATOES is where the real innovation lives: we quote exactly one tick inside whichever bot is best-priced, plant ourselves in the "virgin zone" between the noise bot and the wall, and capture most of the flow that would otherwise hit the noise bot. A layer of defensive guards (noise-bot presence check, position-limit pre-clamp, error-counter logging) protects us against the most obvious ways live trading could diverge from backtest.
 
-- **EMERALDS** (position limit: 80) — Extremely stable asset, fair value locked at 10,000. Strategy: static fair-value market making with a tight spread (9,998 / 10,002).
-- **TOMATOES** (position limit: 80) — Volatile, trending asset. Strategy: dynamic fair-value tracking via EMA (alpha=0.3) + inventory-skewed market making.
+Backtested PnL on the two sample days (Jmerle backtester, conservative matching):
 
-Both products use a **two-phase approach** each iteration:
-1. **TAKE** — Aggressively pick off any mispriced bot quotes (buy below fair value, sell above).
-2. **MAKE** — Post resting limit orders inside the bot spread to capture the spread as profit.
+| Version | EMERALDS | TOMATOES | Total |
+|---|---:|---:|---:|
+| `trader.py` (baseline) | 4,150 | 7,741 | 11,890 |
+| `trader_hybrid_v1` | 14,945 | 8,170 | 23,116 |
+| **`trader_final_v1`** | **14,945** | **16,726** | **31,671** |
 
-### `Tutorial/tutorial.pdf` — Strategy Guide
+Detailed walkthrough, design rationale, and residual risks are in [`Round0/WRITEUP.md`](Round0/WRITEUP.md).
 
-A comprehensive write-up covering:
-- How the Prosperity simulation works
-- Core trading concepts (order books, spreads, position limits)
-- Data analysis of the sample CSVs
-- Market making strategy explained with math
-- EMA fair value estimation
-- Inventory skew / risk management
-- Code walkthrough of `trader.py`
-- Common pitfalls to avoid
-- Tips for preparing for future rounds
+## Backtesting
+
+We use a patched local install of [Jmerle's open-source Prosperity 3 backtester](https://github.com/jmerle/imc-prosperity-3-backtester) (with Round 0 products added to its `LIMITS` dict). Important caveat: sample data runs ~10× longer than the live ~2,000-tick submissions, and the `--match-trades worse` mode is still somewhat optimistic, so treat absolute backtester PnL as a **relative** comparison tool, not a live forecast. Details in the writeup.
