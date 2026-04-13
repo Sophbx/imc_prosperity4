@@ -57,7 +57,7 @@ A small library of defensive guards lives on top:
 | `trader_phase2_D` | 31,657 | Adaptive noise tracking |
 | **`trader_final_v1`** | **31,671** | D + E split-quote + defensive guards |
 
-All numbers are from the Jmerle backtester on the provided day -1 + day -2 sample data, `--match-trades worse` (conservative matching). Optimistic matching peaks at 33,950.
+All numbers are from [Jmerle's Prosperity 3 backtester](https://github.com/jmerle/imc-prosperity-3-backtester) (last year's version — we haven't found a Prosperity 4 equivalent yet, and we locally patched this one to accept our products) run on the day -1 + day -2 sample CSVs with `--match-trades worse` (conservative matching). Optimistic matching peaks at 33,950. **Treat these as reference numbers only** — see the "Backtester and expected live PnL" section below for the full caveats.
 
 Two external things shaped the breakthrough:
 
@@ -66,15 +66,20 @@ Two external things shaped the breakthrough:
 
 ## Backtester and expected live PnL
 
-We use [Jmerle's Prosperity 3 backtester](https://github.com/jmerle/imc-prosperity-3-backtester), patched to accept EMERALDS and TOMATOES in its `LIMITS` dict. Sample data is two full days (~20,000 ticks total). **The live Prosperity server only runs ~2,000 ticks per submission**, so divide backtester numbers by ~10 to estimate live PnL.
+We are currently running [Jmerle's **Prosperity 3** backtester](https://github.com/jmerle/imc-prosperity-3-backtester) — the same tool last year's top teams (including Frankfurt Hedgehogs) used. There is no official Prosperity 4 equivalent yet as far as we can tell, so this is a stop-gap. **We locally patched it** to accept EMERALDS and TOMATOES in its hardcoded `LIMITS` dict; those two lines aside, the tool is unchanged from upstream. Please treat every backtester number in this repo as a **rough reference**, not ground truth — the P3 simulation mechanics may differ from P4 in ways we haven't verified, and our patch was deliberately minimal so the core matching logic is still whatever Jmerle wrote for last year.
 
-Additionally, the "conservative" `--match-trades worse` mode still uses strict `<` price comparison and does **not** model queue priority. It's roughly conservative but still optimistic by ~30-50% relative to live. So for `trader_final_v1`:
+Beyond the P3-vs-P4 mismatch, two more reasons to distrust absolute numbers:
+
+1. **Tick count**. Sample data is two full days (~20,000 ticks total). The live Prosperity server only runs ~2,000 ticks per submission, so divide backtester numbers by ~10 for a first-order live estimate.
+2. **Optimistic matching**. The `--match-trades worse` mode still uses strict `<` price comparison and does **not** model queue priority. It's approximately conservative but still ~30-50% optimistic relative to realistic live fills.
+
+So for `trader_final_v1`:
 
 - Backtester conservative: **31,671**
 - Divided by 10 (tick count): ~3,167
 - After realism discount (×0.6-0.7): **~1,900-2,200**
 
-For comparison, the original `trader.py` was scoring ~1,000-1,200 live. So we're looking at roughly a **2× lift** if the live market matches the sample data distribution.
+For comparison, the original `trader.py` was scoring ~1,000-1,200 live. That suggests a rough **2× lift** _if_ the live market behaves anything like the sample data — which we can't fully verify until we actually upload. Use backtester deltas for **relative** comparisons between trader versions, not as a live PnL forecast.
 
 ## Known residual risks
 
@@ -82,7 +87,7 @@ Worth mentioning before we upload:
 
 - **Noise bot assumption.** If the live noise bot behaves differently (disappears, becomes informed flow, or quotes at a different offset), our TOMATOES edge could evaporate. The current adaptive logic handles "different offset" gracefully, but a disappearing noise bot or an informed one would hurt.
 - **Adverse selection.** Measured in backtest: wall_mid drifts -0.21 ticks over 20 ticks after we fill a MAKE BUY (n=406). Eats 3-4% of per-trade edge. Could be worse live.
-- **Backtester optimism.** See above — don't trust the absolute numbers, trust the relative comparisons across versions.
+- **Backtester optimism / P3-vs-P4 gap.** See above — we're using last year's backtester with a local patch, so absolute numbers shouldn't be trusted. Treat them as a relative comparison between trader versions.
 - **Adverse-selection brake (skipped).** We wrote it, measured it, and removed it — it hurt conservative PnL by 341 points (whipsaw). State variables are still persisted so we can turn it back on with a tighter trigger if live logs suggest it.
 
 ## What to try for Round 1
