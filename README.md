@@ -1,6 +1,6 @@
-# IMC Prosperity 4 — [Team Name TBD]
+# IMC Prosperity 4 — Allium tuberosum
 
-Our team repository for the [IMC Prosperity 4](https://prosperity.imc.com/) algorithmic trading competition (Spring 2026). We are a group of NYU students competing across all five rounds, tracking our strategies, analyses, and iterations here as we progress.
+Our team repository for the [IMC Prosperity 4](https://prosperity.imc.com/) algorithmic trading competition (Spring 2026).
 
 ## The Team
 
