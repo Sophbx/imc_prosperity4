@@ -1,8 +1,11 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 
+from pathlib import Path
+
 # Load data here. Change via the file path.
-file_path = "Data/prices_round_1_day_0.csv" 
+base_dir = Path(__file__).resolve().parent
+file_path = base_dir / "prices_round_1_day_0.csv"
 df = pd.read_csv(file_path, sep=';')
 
 # Basic info
