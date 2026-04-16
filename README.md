@@ -9,7 +9,7 @@ Our team repository for the [IMC Prosperity 4](https://prosperity.imc.com/) algo
 | Name | Role | Links |
 |---|---|---|
 | Nick Zhu | Team Lead / Strategy | [LinkedIn](TBD) · [GitHub](https://github.com/Sophbx) |
-| _Teammate 2_ | _TBD_ | _TBD_ |
+| Sophia Gu | Manager/Strategy/Validation | [LinkedIn](https://www.linkedin.com/in/sophia-gu-912bbb294/) · [GitHub](https://github.com/Sophbx)|
 | _Teammate 3_ | _TBD_ | _TBD_ |
 | _Teammate 4_ | _TBD_ | _TBD_ |
 
