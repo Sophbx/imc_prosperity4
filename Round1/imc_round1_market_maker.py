@@ -1,263 +1,200 @@
-from __future__ import annotations
+import json
+from typing import Any
 
-import argparse
-import re
-from dataclasses import dataclass
-from pathlib import Path
-
-import numpy as np
-import pandas as pd
+from datamodel import Order, OrderDepth, TradingState
 
 
-TARGET_PRODUCTS = ("ASH_COATED_OSMIUM", "INTARIAN_PEPPER_ROOT")
+class Trader:
+    PEPPER = "INTARIAN_PEPPER_ROOT"
+    OSMIUM = "ASH_COATED_OSMIUM"
+    PRODUCTS = (OSMIUM, PEPPER)
 
+    POSITION_LIMITS = {
+        OSMIUM: 20,
+        PEPPER: 20,
+    }
 
-@dataclass(frozen=True)
-class ProductConfig:
-    rolling_window: int
-    edge: float
-    inventory_limit: int
-    inventory_penalty: float
+    OSMIUM_CONFIG = {
+        "ema_alpha": 0.18,
+        "inventory_skew": 0.35,
+        "min_edge": 2.0,
+        "order_size": 5,
+    }
 
+    PEPPER_CONFIG = {
+        "ema_alpha": 0.12,
+        "trend_alpha": 0.22,
+        "inventory_skew": 0.15,
+        "signal_threshold": 1.5,
+        "prediction_horizon": 8.0,
+        "passive_size": 6,
+        "aggressive_size": 8,
+    }
 
-PRODUCT_CONFIGS: dict[str, ProductConfig] = {
-    "ASH_COATED_OSMIUM": ProductConfig(
-        rolling_window=60,
-        edge=2.0,
-        inventory_limit=20,
-        inventory_penalty=0.25,
-    ),
-    "INTARIAN_PEPPER_ROOT": ProductConfig(
-        rolling_window=10,
-        edge=0.0,
-        inventory_limit=20,
-        inventory_penalty=0.0,
-    ),
-}
+    def bid(self):
+        return 15
 
+    def run(self, state: TradingState):
+        memory = self._load_memory(state.traderData)
+        result: dict[str, list[Order]] = {}
 
-PRICE_FILE_PATTERN = re.compile(r"prices_round_1_day_(-?\d+)\.csv$")
-TRADE_FILE_PATTERN = re.compile(r"trades_round_1_day_(-?\d+)\.csv$")
-
-
-def infer_day(path: Path, pattern: re.Pattern[str]) -> int:
-    match = pattern.search(path.name)
-    if match is None:
-        raise ValueError(f"Could not infer trading day from {path}")
-    return int(match.group(1))
-
-
-def discover_files(data_dir: Path, prefix: str) -> list[Path]:
-    files = sorted(data_dir.glob(f"{prefix}_round_1_day_*.csv"))
-    if not files:
-        raise FileNotFoundError(f"No files matching {prefix}_round_1_day_*.csv in {data_dir}")
-    return files
-
-
-def load_prices(data_dir: Path) -> pd.DataFrame:
-    frames: list[pd.DataFrame] = []
-    for path in discover_files(data_dir, "prices"):
-        day = infer_day(path, PRICE_FILE_PATTERN)
-        frame = pd.read_csv(path, sep=";")
-        frame["day"] = day
-        frames.append(frame)
-
-    prices = pd.concat(frames, ignore_index=True)
-    prices = prices[prices["product"].isin(TARGET_PRODUCTS)].copy()
-    prices = prices.sort_values(["product", "day", "timestamp"]).reset_index(drop=True)
-    return prices
-
-
-def load_trades(data_dir: Path) -> pd.DataFrame:
-    frames: list[pd.DataFrame] = []
-    for path in discover_files(data_dir, "trades"):
-        day = infer_day(path, TRADE_FILE_PATTERN)
-        frame = pd.read_csv(path, sep=";")
-        frame["day"] = day
-        frames.append(frame)
-
-    trades = pd.concat(frames, ignore_index=True)
-    trades = trades[trades["symbol"].isin(TARGET_PRODUCTS)].copy()
-    trades = trades.sort_values(["symbol", "day", "timestamp"]).reset_index(drop=True)
-    return trades
-
-
-def build_quote_state(prices: pd.DataFrame, product: str, config: ProductConfig) -> pd.DataFrame:
-    quotes = prices.loc[prices["product"] == product].copy()
-    quotes = quotes[quotes["bid_price_1"].notna() & quotes["ask_price_1"].notna()].copy()
-
-    quotes["mid_price"] = (quotes["bid_price_1"] + quotes["ask_price_1"]) / 2.0
-    top_book_volume = quotes["bid_volume_1"].fillna(0) + quotes["ask_volume_1"].fillna(0)
-    quotes["microprice"] = np.where(
-        top_book_volume > 0,
-        (
-            quotes["ask_price_1"] * quotes["bid_volume_1"].fillna(0)
-            + quotes["bid_price_1"] * quotes["ask_volume_1"].fillna(0)
-        )
-        / top_book_volume,
-        quotes["mid_price"],
-    )
-    quotes["rolling_mid"] = quotes.groupby("day")["mid_price"].transform(
-        lambda series: series.rolling(config.rolling_window, min_periods=1).mean()
-    )
-    quotes["fair_value"] = 0.5 * quotes["rolling_mid"] + 0.5 * quotes["microprice"]
-
-    return quotes[
-        [
-            "day",
-            "timestamp",
-            "bid_price_1",
-            "ask_price_1",
-            "mid_price",
-            "fair_value",
-        ]
-    ].copy()
-
-
-def simulate_product(
-    product: str,
-    quotes: pd.DataFrame,
-    trades: pd.DataFrame,
-    config: ProductConfig,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    product_trades = trades.loc[trades["symbol"] == product].copy()
-    merged = product_trades.merge(quotes, on=["day", "timestamp"], how="left")
-    merged = merged.sort_values(["day", "timestamp"]).reset_index(drop=True)
-
-    day_results: list[dict[str, float | int | str]] = []
-    fill_records: list[dict[str, float | int | str]] = []
-
-    for day, day_trades in merged.groupby("day", sort=True):
-        position = 0
-        cash = 0.0
-        buy_qty = 0
-        sell_qty = 0
-        fill_count = 0
-        last_mid = np.nan
-
-        for row in day_trades.itertuples(index=False):
-            if pd.isna(row.bid_price_1) or pd.isna(row.ask_price_1) or pd.isna(row.fair_value):
+        for product in self.PRODUCTS:
+            depth = state.order_depths.get(product)
+            if depth is None:
+                result[product] = []
                 continue
 
-            last_mid = float(row.mid_price)
-            reservation_price = float(row.fair_value) - config.inventory_penalty * position
+            position = state.position.get(product, 0)
+            best_bid, best_ask = self._best_prices(depth)
+            if best_bid is None or best_ask is None:
+                result[product] = []
+                continue
 
-            quote_bid = position < config.inventory_limit and float(row.bid_price_1) <= reservation_price - config.edge
-            quote_ask = position > -config.inventory_limit and float(row.ask_price_1) >= reservation_price + config.edge
+            mid = (best_bid + best_ask) / 2.0
+            product_memory = memory.setdefault(product, {})
+            self._update_memory(product_memory, mid)
 
-            if quote_bid and float(row.price) == float(row.bid_price_1):
-                quantity = min(int(row.quantity), config.inventory_limit - position)
-                if quantity > 0:
-                    position += quantity
-                    cash -= quantity * float(row.bid_price_1)
-                    buy_qty += quantity
-                    fill_count += 1
-                    fill_records.append(
-                        {
-                            "product": product,
-                            "day": int(day),
-                            "timestamp": int(row.timestamp),
-                            "side": "BUY",
-                            "price": float(row.bid_price_1),
-                            "quantity": quantity,
-                            "position_after": position,
-                        }
-                    )
+            if product == self.OSMIUM:
+                orders = self._trade_osmium(depth, position, product_memory)
+            else:
+                orders = self._trade_pepper(depth, position, product_memory)
 
-            if quote_ask and float(row.price) == float(row.ask_price_1):
-                quantity = min(int(row.quantity), config.inventory_limit + position)
-                if quantity > 0:
-                    position -= quantity
-                    cash += quantity * float(row.ask_price_1)
-                    sell_qty += quantity
-                    fill_count += 1
-                    fill_records.append(
-                        {
-                            "product": product,
-                            "day": int(day),
-                            "timestamp": int(row.timestamp),
-                            "side": "SELL",
-                            "price": float(row.ask_price_1),
-                            "quantity": quantity,
-                            "position_after": position,
-                        }
-                    )
+            result[product] = orders
 
-        if np.isnan(last_mid):
-            last_mid = 0.0
+        trader_data = json.dumps(memory, separators=(",", ":"))
+        conversions = 0
+        return result, conversions, trader_data
 
-        mtm_pnl = cash + position * last_mid
-        day_results.append(
-            {
-                "product": product,
-                "day": int(day),
-                "buy_qty": buy_qty,
-                "sell_qty": sell_qty,
-                "fills": fill_count,
-                "end_position": position,
-                "close_mid": last_mid,
-                "mark_to_market_pnl": mtm_pnl,
+    def _trade_osmium(self, depth: OrderDepth, position: int, memory: dict[str, Any]) -> list[Order]:
+        best_bid, best_ask = self._best_prices(depth)
+        if best_bid is None or best_ask is None:
+            return []
+
+        cfg = self.OSMIUM_CONFIG
+        fair_value = self._microprice(depth)
+        smoothed_mid = memory["ema_mid"]
+        reservation_price = 0.55 * fair_value + 0.45 * smoothed_mid - cfg["inventory_skew"] * position
+
+        buy_limit = self.POSITION_LIMITS[self.OSMIUM] - position
+        sell_limit = self.POSITION_LIMITS[self.OSMIUM] + position
+        inside_bid = best_bid + 1
+        inside_ask = best_ask - 1
+
+        orders: list[Order] = []
+
+        if buy_limit > 0 and inside_bid < best_ask and reservation_price - inside_bid >= cfg["min_edge"]:
+            qty = min(cfg["order_size"], buy_limit)
+            orders.append(Order(self.OSMIUM, inside_bid, qty))
+
+        if sell_limit > 0 and inside_ask > best_bid and inside_ask - reservation_price >= cfg["min_edge"]:
+            qty = min(cfg["order_size"], sell_limit)
+            orders.append(Order(self.OSMIUM, inside_ask, -qty))
+
+        return orders
+
+    def _trade_pepper(self, depth: OrderDepth, position: int, memory: dict[str, Any]) -> list[Order]:
+        best_bid, best_ask = self._best_prices(depth)
+        if best_bid is None or best_ask is None:
+            return []
+
+        cfg = self.PEPPER_CONFIG
+        slope = memory["ema_slope"]
+        fair_now = memory["ema_mid"]
+        predicted_fair = fair_now + cfg["prediction_horizon"] * slope - cfg["inventory_skew"] * position
+
+        buy_limit = self.POSITION_LIMITS[self.PEPPER] - position
+        sell_limit = self.POSITION_LIMITS[self.PEPPER] + position
+        signal = predicted_fair - ((best_bid + best_ask) / 2.0)
+        orders: list[Order] = []
+
+        if signal >= cfg["signal_threshold"] and buy_limit > 0:
+            take_qty = min(cfg["aggressive_size"], buy_limit)
+            orders.append(Order(self.PEPPER, best_ask, take_qty))
+
+            passive_qty = min(cfg["passive_size"], max(0, buy_limit - take_qty))
+            passive_bid = min(best_ask - 1, best_bid + 1)
+            if passive_qty > 0 and passive_bid <= predicted_fair - 1:
+                orders.append(Order(self.PEPPER, passive_bid, passive_qty))
+
+        elif signal <= -cfg["signal_threshold"] and sell_limit > 0:
+            take_qty = min(cfg["aggressive_size"], sell_limit)
+            orders.append(Order(self.PEPPER, best_bid, -take_qty))
+
+            passive_qty = min(cfg["passive_size"], max(0, sell_limit - take_qty))
+            passive_ask = max(best_bid + 1, best_ask - 1)
+            if passive_qty > 0 and passive_ask >= predicted_fair + 1:
+                orders.append(Order(self.PEPPER, passive_ask, -passive_qty))
+
+        else:
+            if buy_limit > 0:
+                passive_bid = min(best_ask - 1, best_bid + 1)
+                if passive_bid < best_ask and passive_bid <= predicted_fair - 1:
+                    orders.append(Order(self.PEPPER, passive_bid, min(cfg["passive_size"], buy_limit)))
+
+            if sell_limit > 0:
+                passive_ask = max(best_bid + 1, best_ask - 1)
+                if passive_ask > best_bid and passive_ask >= predicted_fair + 1:
+                    orders.append(Order(self.PEPPER, passive_ask, -min(cfg["passive_size"], sell_limit)))
+
+        return orders
+
+    def _update_memory(self, product_memory: dict[str, Any], mid: float) -> None:
+        product = product_memory.get("product")
+        if product is None:
+            return
+
+        if "ema_mid" not in product_memory:
+            product_memory["last_mid"] = mid
+            product_memory["ema_mid"] = mid
+            product_memory["ema_slope"] = 0.0
+            return
+
+        last_mid = product_memory["last_mid"]
+        if "ASH_COATED_OSMIUM" in str(product):
+            alpha = self.OSMIUM_CONFIG["ema_alpha"]
+            slope_alpha = 0.0
+        else:
+            alpha = self.PEPPER_CONFIG["ema_alpha"]
+            slope_alpha = self.PEPPER_CONFIG["trend_alpha"]
+
+        ema_mid = product_memory["ema_mid"] + alpha * (mid - product_memory["ema_mid"])
+        raw_slope = mid - last_mid
+        ema_slope = product_memory["ema_slope"] + slope_alpha * (raw_slope - product_memory["ema_slope"])
+
+        product_memory["last_mid"] = mid
+        product_memory["ema_mid"] = ema_mid
+        product_memory["ema_slope"] = ema_slope
+
+    def _load_memory(self, trader_data: str) -> dict[str, dict[str, Any]]:
+        if not trader_data:
+            return {
+                self.OSMIUM: {"product": self.OSMIUM},
+                self.PEPPER: {"product": self.PEPPER},
             }
-        )
 
-    return pd.DataFrame(day_results), pd.DataFrame(fill_records)
+        try:
+            memory = json.loads(trader_data)
+        except json.JSONDecodeError:
+            memory = {}
 
+        for product in self.PRODUCTS:
+            product_memory = memory.setdefault(product, {})
+            product_memory.setdefault("product", product)
+        return memory
 
-def run_backtest(data_dir: Path, show_fills: int) -> None:
-    prices = load_prices(data_dir)
-    trades = load_trades(data_dir)
+    @staticmethod
+    def _best_prices(depth: OrderDepth) -> tuple[int | None, int | None]:
+        best_bid = max(depth.buy_orders) if depth.buy_orders else None
+        best_ask = min(depth.sell_orders) if depth.sell_orders else None
+        return best_bid, best_ask
 
-    summaries: list[pd.DataFrame] = []
-    sample_fills: list[pd.DataFrame] = []
-
-    for product in TARGET_PRODUCTS:
-        config = PRODUCT_CONFIGS[product]
-        quote_state = build_quote_state(prices, product, config)
-        product_summary, product_fills = simulate_product(product, quote_state, trades, config)
-        summaries.append(product_summary)
-        if show_fills > 0 and not product_fills.empty:
-            sample_fills.append(product_fills.head(show_fills))
-
-    summary = pd.concat(summaries, ignore_index=True)
-    total = (
-        summary.groupby("product", as_index=False)[["buy_qty", "sell_qty", "fills", "mark_to_market_pnl"]]
-        .sum()
-        .sort_values("product")
-    )
-
-    print("Per-day backtest summary")
-    print(summary.to_string(index=False))
-    print()
-    print("Product totals")
-    print(total.to_string(index=False))
-    print()
-    print(f"Grand total PnL: {summary['mark_to_market_pnl'].sum():,.2f}")
-
-    if sample_fills:
-        print()
-        print("Sample fills")
-        print(pd.concat(sample_fills, ignore_index=True).to_string(index=False))
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Backtest a passive market-making strategy on IMC Prosperity Round 1 CSV files."
-    )
-    parser.add_argument(
-        "--data-dir",
-        type=Path,
-        default=Path(r"C:\Users\gusiy\OneDrive\Desktop\imc_prosperity4\Round1\Data"),
-        help="Directory containing prices_round_1_day_*.csv and trades_round_1_day_*.csv",
-    )
-    parser.add_argument(
-        "--show-fills",
-        type=int,
-        default=10,
-        help="Number of sample fills to print per product",
-    )
-    return parser.parse_args()
-
-
-if __name__ == "__main__":
-    args = parse_args()
-    run_backtest(args.data_dir, show_fills=args.show_fills)
+    @staticmethod
+    def _microprice(depth: OrderDepth) -> float:
+        best_bid = max(depth.buy_orders)
+        best_ask = min(depth.sell_orders)
+        bid_volume = depth.buy_orders[best_bid]
+        ask_volume = abs(depth.sell_orders[best_ask])
+        total = bid_volume + ask_volume
+        if total == 0:
+            return (best_bid + best_ask) / 2.0
+        return (best_ask * bid_volume + best_bid * ask_volume) / total
