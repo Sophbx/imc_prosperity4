@@ -143,7 +143,11 @@ def first_existing(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
 def safe_div(a, b):
     with np.errstate(divide="ignore", invalid="ignore"):
         out = np.divide(a, b)
-    if isinstance(out, np.ndarray):
+    if isinstance(out, pd.Series):
+        out = out.where(np.isfinite(out), np.nan)
+    elif isinstance(out, pd.DataFrame):
+        out = out.where(np.isfinite(out), np.nan)
+    elif isinstance(out, np.ndarray):
         out[~np.isfinite(out)] = np.nan
     elif not np.isfinite(out):
         out = np.nan
