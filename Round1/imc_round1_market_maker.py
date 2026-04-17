@@ -19,6 +19,7 @@ class Trader:
         "inventory_skew": 3.0,
         "min_edge": 4,
         "order_size": 18,
+        "max_spread": 18,
     }
 
     PEPPER_CONFIG = {
