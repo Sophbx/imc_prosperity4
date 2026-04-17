@@ -10,25 +10,25 @@ class Trader:
     PRODUCTS = (OSMIUM, PEPPER)
 
     POSITION_LIMITS = {
-        OSMIUM: 20,
-        PEPPER: 20,
+        OSMIUM: 12,
+        PEPPER: 8,
     }
 
     OSMIUM_CONFIG = {
-        "ema_alpha": 0.18,
-        "inventory_skew": 0.35,
-        "min_edge": 2.0,
-        "order_size": 5,
+        "ema_alpha": 0.45,
+        "inventory_skew": 3.0,
+        "min_edge": 4,
+        "order_size": 18,
     }
 
     PEPPER_CONFIG = {
         "ema_alpha": 0.12,
         "trend_alpha": 0.22,
-        "inventory_skew": 0.15,
-        "signal_threshold": 1.5,
-        "prediction_horizon": 8.0,
-        "passive_size": 6,
-        "aggressive_size": 8,
+        "inventory_skew": 0.25,
+        "signal_threshold": 2.5,
+        "prediction_horizon": 10.0,
+        "passive_size": 3,
+        "max_spread": 14,
     }
 
     def bid(self):
@@ -71,6 +71,10 @@ class Trader:
             return []
 
         cfg = self.OSMIUM_CONFIG
+        spread = best_ask - best_bid
+        if spread <= 1 or spread > cfg["max_spread"]:
+            return []
+        
         fair_value = self._microprice(depth)
         smoothed_mid = memory["ema_mid"]
         reservation_price = 0.55 * fair_value + 0.45 * smoothed_mid - cfg["inventory_skew"] * position
@@ -98,6 +102,10 @@ class Trader:
             return []
 
         cfg = self.PEPPER_CONFIG
+        spread = best_ask - best_bid
+        if spread <= 1 or spread > cfg["max_spread"]:
+            return []
+        
         slope = memory["ema_slope"]
         fair_now = memory["ema_mid"]
         predicted_fair = fair_now + cfg["prediction_horizon"] * slope - cfg["inventory_skew"] * position
@@ -107,34 +115,21 @@ class Trader:
         signal = predicted_fair - ((best_bid + best_ask) / 2.0)
         orders: list[Order] = []
 
+        # Pepper Root drifts upward in the capsule, but the drift is too small
+        # to justify lifting the ask. Only quote passively and bias toward bids.
+        passive_bid = min(best_ask - 1, best_bid + 1)
+        passive_ask = max(best_bid + 1, best_ask - 1)
+
         if signal >= cfg["signal_threshold"] and buy_limit > 0:
-            take_qty = min(cfg["aggressive_size"], buy_limit)
-            orders.append(Order(self.PEPPER, best_ask, take_qty))
-
-            passive_qty = min(cfg["passive_size"], max(0, buy_limit - take_qty))
-            passive_bid = min(best_ask - 1, best_bid + 1)
-            if passive_qty > 0 and passive_bid <= predicted_fair - 1:
-                orders.append(Order(self.PEPPER, passive_bid, passive_qty))
-
-        elif signal <= -cfg["signal_threshold"] and sell_limit > 0:
-            take_qty = min(cfg["aggressive_size"], sell_limit)
-            orders.append(Order(self.PEPPER, best_bid, -take_qty))
-
-            passive_qty = min(cfg["passive_size"], max(0, sell_limit - take_qty))
-            passive_ask = max(best_bid + 1, best_ask - 1)
-            if passive_qty > 0 and passive_ask >= predicted_fair + 1:
-                orders.append(Order(self.PEPPER, passive_ask, -passive_qty))
-
-        else:
-            if buy_limit > 0:
-                passive_bid = min(best_ask - 1, best_bid + 1)
-                if passive_bid < best_ask and passive_bid <= predicted_fair - 1:
-                    orders.append(Order(self.PEPPER, passive_bid, min(cfg["passive_size"], buy_limit)))
-
-            if sell_limit > 0:
-                passive_ask = max(best_bid + 1, best_ask - 1)
-                if passive_ask > best_bid and passive_ask >= predicted_fair + 1:
-                    orders.append(Order(self.PEPPER, passive_ask, -min(cfg["passive_size"], sell_limit)))
+            if passive_bid < best_ask and passive_bid <= predicted_fair - 1:
+                orders.append(Order(self.PEPPER, passive_bid, min(cfg["passive_size"], buy_limit)))
+        
+        # Only offer inventory back out when we are already long enough or the
+        # short-term signal turns clearly against us.
+        if position > 0 and sell_limit > 0:
+            should_offer = signal <= 0.5 or position >= self.POSITION_LIMITS[self.PEPPER] // 2
+            if should_offer and passive_ask > best_bid and passive_ask >= predicted_fair:
+                orders.append(Order(self.PEPPER, passive_ask, -min(cfg["passive_size"], sell_limit, position)))
 
         return orders
 
