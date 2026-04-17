@@ -12,13 +12,14 @@ class Trader:
 
     # INTARIAN_PEPPER_ROOT is extremely close to a linear upward drift in the
     # training data: fair ~= anchor + 0.001 * timestamp
+    # --> Adjust params
     PEPPER_SLOPE = 0.001
-    PEPPER_ENTRY_PREMIUM_EARLY = 12
-    PEPPER_ENTRY_PREMIUM_LATE = 6
-    PEPPER_PASSIVE_SIZE = 20
-    PEPPER_SCALP_EDGE = 7
-    PEPPER_SCALP_SIZE = 10
-    PEPPER_ANCHOR_ALPHA = 0.05
+    PEPPER_ENTRY_BONUS_EARLY = 12 # buy with more flexibility in the early time --> trend chase
+    PEPPER_ENTRY_BONUS_LATE = 6 # Later, conservative
+    PEPPER_PASSIVE_SIZE = 20 # When issuing bid, what's the size?
+    PEPPER_SCALP_EDGE = 7 # Edge signalling short
+    PEPPER_SCALP_SIZE = 10 # Short size
+    PEPPER_ANCHOR_ALPHA = 0.05 # Believe in long-term buy signal
 
     # ASH_COATED_OSMIUM looks close to stationary around a moving fair value.
     ASH_HISTORY_LEN = 40
@@ -49,13 +50,13 @@ class Trader:
     ) -> List[Order]:
         product = "INTARIAN_PEPPER_ROOT"
         limit = self.POSITION_LIMITS[product]
-        position = state.position.get(product, 0)
+        position = state.position.get(product, 0) # position needs to be smaller than limit
         orders: List[Order] = []
 
         best_bid, best_ask = self._best_bid_ask(order_depth)
         mid = self._mid_price(order_depth)
         if mid is None:
-            return orders
+            return orders # No order in the book
 
         anchor_obs = mid - self.PEPPER_SLOPE * state.timestamp
         anchor = data.get("pepper_anchor")
@@ -66,10 +67,11 @@ class Trader:
         data["pepper_anchor"] = anchor
 
         fair = anchor + self.PEPPER_SLOPE * state.timestamp
-        early = state.timestamp <= 5_000
-        entry_premium = self.PEPPER_ENTRY_PREMIUM_EARLY if early else self.PEPPER_ENTRY_PREMIUM_LATE
+        early = state.timestamp <= 5_000 # Adjust early period def
+        entry_premium = self.PEPPER_ENTRY_BONUS_EARLY if early else self.PEPPER_ENTRY_BONUS_LATE
 
         # Core view: keep a large long inventory because the fair value drifts upward.
+        # Param adjustion
         target_position = limit
 
         if position < target_position:
@@ -86,7 +88,7 @@ class Trader:
 
         # Optional small scalp when the book is unusually rich versus trend fair.
         # Keep the strategy net long by never selling below 40 inventory.
-        if position > 40:
+        if position > 40: # Param adjustion
             sellable = min(self.PEPPER_SCALP_SIZE, position - 40)
             filled = self._sell_through(
                 product=product,
@@ -98,8 +100,9 @@ class Trader:
             position -= filled
 
         # If we are still below target, rest a passive bid inside the spread.
+        # We want to bid anyway, regardless of which price we chose.
         if position < target_position and best_bid is not None:
-            quote_bid = min(best_bid + 1, math.floor(fair + 4))
+            quote_bid = min(best_bid + 1, math.floor(fair + 4)) # param adjustion
             if best_ask is None or quote_bid < best_ask:
                 quote_qty = min(self.PEPPER_PASSIVE_SIZE, target_position - position)
                 if quote_qty > 0:
