@@ -1,3 +1,5 @@
+from itertools import product
+
 from datamodel import Order, OrderDepth, TradingState
 from typing import Dict, List, Optional, Tuple
 import json
@@ -13,7 +15,7 @@ class Trader:
     # INTARIAN_PEPPER_ROOT is extremely close to a linear upward drift in the
     # training data: fair ~= anchor + 0.001 * timestamp
     # --> Adjust params
-    PEPPER_SLOPE = 0.001
+    PEPPER_SLOPE = 0.00099
     PEPPER_ENTRY_BONUS_EARLY = 12 # buy with more flexibility in the early time --> trend chase
     PEPPER_ENTRY_BONUS_LATE = 6 # Later, conservative
     PEPPER_PASSIVE_SIZE = 20 # When issuing bid, what's the size?
@@ -54,11 +56,26 @@ class Trader:
         orders: List[Order] = []
 
         best_bid, best_ask = self._best_bid_ask(order_depth)
+        '''
         mid = self._mid_price(order_depth)
+        
         if mid is None:
             return orders # No order in the book
+        '''
 
-        anchor_obs = mid - self.PEPPER_SLOPE * state.timestamp
+        mid = self._mid_price(order_depth)
+        trade_price = self._latest_trade_price(state, product)
+        if mid is not None and trade_price is not None:
+            price_obs = max(mid, trade_price)
+        elif trade_price is not None:
+            price_obs = trade_price
+        else:
+            price_obs = mid
+
+        if price_obs is None:
+            return orders
+
+        anchor_obs = price_obs - self.PEPPER_SLOPE * state.timestamp
         anchor = data.get("pepper_anchor")
         if anchor is None or state.timestamp == 0:
             anchor = anchor_obs
@@ -231,7 +248,7 @@ class Trader:
         if best_ask is not None:
             return float(best_ask)
         return None
-
+    '''
     def _load_data(self, trader_data: str) -> Dict:
         if not trader_data:
             return {"ash_mids": [], "pepper_anchor": None}
@@ -244,7 +261,23 @@ class Trader:
             return data
         except Exception:
             return {"ash_mids": [], "pepper_anchor": None}
-
+    '''
+    def _load_data(self, trader_data: str) -> Dict:
+        if not trader_data:
+            return {"ash_mids": [], "pepper_anchor": None, "pepper_last_trade_price": None}
+        try:
+            data = json.loads(trader_data)
+            if "ash_mids" not in data:
+                data["ash_mids"] = []
+            if "pepper_anchor" not in data:
+                data["pepper_anchor"] = None
+            if "pepper_last_trade_price" not in data:
+                data["pepper_last_trade_price"] = None
+            return data
+        except Exception:
+            return {"ash_mids": [], "pepper_anchor": None, "pepper_last_trade_price": None}
+       
+    '''
     def _dump_data(self, data: Dict) -> str:
         # Keep traderData compact.
         compact = {
@@ -252,3 +285,21 @@ class Trader:
             "pepper_anchor": data.get("pepper_anchor"),
         }
         return json.dumps(compact, separators=(",", ":"))
+    '''
+    def _dump_data(self, data: Dict) -> str:
+        compact = {
+        "ash_mids": data.get("ash_mids", [])[-self.ASH_HISTORY_LEN :],
+        "pepper_anchor": data.get("pepper_anchor"),
+        "pepper_last_trade_price": data.get("pepper_last_trade_price"),
+    }
+        return json.dumps(compact, separators=(",", ":"))
+
+
+
+    def _latest_trade_price(self, state: TradingState, product: str) -> Optional[float]:
+        trades = state.market_trades.get(product, [])
+        if not trades:
+            return None
+
+        latest_trade = max(trades, key=lambda tr: tr.timestamp)
+        return float(latest_trade.price)
