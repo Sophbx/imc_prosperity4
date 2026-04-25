@@ -159,3 +159,28 @@ def test_constants_match_spec():
     assert helpers.TIMESTAMPS_PER_DAY == 10_000
     assert helpers.YEAR_DAYS == 365
     assert helpers.TTE_DAYS_AT_DAY == {0: 8, 1: 7, 2: 6}
+
+
+EXPECTED_BOOK_COLS = {
+    "touch_mid", "boundary_mid", "size_wall_mid", "side_vwap_mid",
+    "full_book_vwap_center",
+    "touch_spread", "boundary_width", "size_wall_width",
+    "frontier_imbalance", "depth_imbalance", "size_wall_vol_imbalance",
+    "fwd_touch_mid_change_10", "fwd_direction_10",
+}
+
+
+def test_build_book_features_adds_expected_columns():
+    prices = helpers.load_prices(DATA_DIR, ["prices_round_3_day_0.csv"])
+    book = helpers.build_book_features(prices)
+    missing = EXPECTED_BOOK_COLS - set(book.columns)
+    assert not missing, f"missing columns: {missing}"
+
+
+def test_build_book_features_touch_mid_matches_dataset_mid_for_normal_rows():
+    prices = helpers.load_prices(DATA_DIR, ["prices_round_3_day_0.csv"])
+    book = helpers.build_book_features(prices)
+    # For rows where bid_price_1 and ask_price_1 are both present and mid_price>0
+    mask = book["mid_price"] > 0
+    diff = (book.loc[mask, "touch_mid"] - book.loc[mask, "mid_price"]).abs()
+    assert diff.max() <= 1e-9

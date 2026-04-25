@@ -178,3 +178,187 @@ def tte_years(day: int, timestamp: int) -> float:
     """
     days_remaining = TTE_DAYS_AT_DAY[day] - timestamp / TIMESTAMPS_PER_DAY
     return days_remaining / YEAR_DAYS
+
+
+# ---------- book feature engineering (ported from Round1/analysis_v2.py) ----------
+
+VISIBLE_LEVELS = 3
+HORIZON = 10
+
+
+def row_weighted_avg(row, price_cols, vol_cols):
+    vals = [row[c] for c in price_cols]
+    wts = [row[c] for c in vol_cols]
+    return weighted_avg(vals, wts)
+
+
+def row_boundary_bid(row, bid_price_cols):
+    vals = [row[c] for c in bid_price_cols if pd.notna(row[c])]
+    return np.min(vals) if len(vals) > 0 else np.nan
+
+
+def row_boundary_ask(row, ask_price_cols):
+    vals = [row[c] for c in ask_price_cols if pd.notna(row[c])]
+    return np.max(vals) if len(vals) > 0 else np.nan
+
+
+def row_size_wall_price_and_volume(row, price_cols, vol_cols, tie_break="frontier"):
+    """
+    Size-wall = price level with largest displayed volume.
+    tie_break="frontier" means if equal sizes, choose the more aggressive / nearer level:
+      - for bids: higher price
+      - for asks: lower price
+    Since columns are already ordered from frontier outward, keeping the first max does this.
+    """
+    best_idx = None
+    best_vol = -np.inf
+
+    for i, vcol in enumerate(vol_cols):
+        vol = row[vcol]
+        if pd.notna(vol) and vol > best_vol:
+            best_vol = vol
+            best_idx = i
+
+    if best_idx is None:
+        return pd.Series([np.nan, np.nan])
+
+    return pd.Series([row[price_cols[best_idx]], row[vol_cols[best_idx]]])
+
+
+def next_trade_direction_from_price_vs_mid(price, mid):
+    if pd.isna(price) or pd.isna(mid):
+        return np.nan
+    if price > mid:
+        return 1
+    if price < mid:
+        return -1
+    return 0
+
+
+def build_book_features(prices):
+    df = prices.copy()
+
+    bid_price_cols = [f"bid_price_{i}" for i in range(1, VISIBLE_LEVELS + 1)]
+    bid_vol_cols   = [f"bid_volume_{i}" for i in range(1, VISIBLE_LEVELS + 1)]
+    ask_price_cols = [f"ask_price_{i}" for i in range(1, VISIBLE_LEVELS + 1)]
+    ask_vol_cols   = [f"ask_volume_{i}" for i in range(1, VISIBLE_LEVELS + 1)]
+
+    # ---------------------------
+    # Frontier = best prices
+    # ---------------------------
+    df["frontier_bid"] = df["bid_price_1"]   # highest bid
+    df["frontier_ask"] = df["ask_price_1"]   # lowest ask
+    df["touch_mid"] = (df["frontier_bid"] + df["frontier_ask"]) / 2.0
+    df["touch_spread"] = df["frontier_ask"] - df["frontier_bid"]
+
+    # Check original dataset mid_price
+    df["dataset_mid_minus_touch_mid"] = df["mid_price"] - df["touch_mid"]
+
+    # ---------------------------
+    # Boundary = visible outer edge of current scanned book
+    # ---------------------------
+    df["boundary_bid"] = df.apply(lambda r: row_boundary_bid(r, bid_price_cols), axis=1)
+    df["boundary_ask"] = df.apply(lambda r: row_boundary_ask(r, ask_price_cols), axis=1)
+    df["boundary_mid"] = (df["boundary_bid"] + df["boundary_ask"]) / 2.0
+    df["boundary_width"] = df["boundary_ask"] - df["boundary_bid"]
+
+    # ---------------------------
+    # Size-wall / max-size mode
+    # ---------------------------
+    df[["size_wall_bid", "size_wall_bid_vol"]] = df.apply(
+        lambda r: row_size_wall_price_and_volume(r, bid_price_cols, bid_vol_cols), axis=1
+    )
+    df[["size_wall_ask", "size_wall_ask_vol"]] = df.apply(
+        lambda r: row_size_wall_price_and_volume(r, ask_price_cols, ask_vol_cols), axis=1
+    )
+    df["size_wall_mid"] = (df["size_wall_bid"] + df["size_wall_ask"]) / 2.0
+    df["size_wall_width"] = df["size_wall_ask"] - df["size_wall_bid"]
+
+    # ---------------------------
+    # VWAP centers
+    # ---------------------------
+    df["bid_vwap_center"] = df.apply(lambda r: row_weighted_avg(r, bid_price_cols, bid_vol_cols), axis=1)
+    df["ask_vwap_center"] = df.apply(lambda r: row_weighted_avg(r, ask_price_cols, ask_vol_cols), axis=1)
+    df["side_vwap_mid"] = (df["bid_vwap_center"] + df["ask_vwap_center"]) / 2.0
+
+    all_price_cols = bid_price_cols + ask_price_cols
+    all_vol_cols = bid_vol_cols + ask_vol_cols
+    df["full_book_vwap_center"] = df.apply(lambda r: row_weighted_avg(r, all_price_cols, all_vol_cols), axis=1)
+
+    # ---------------------------
+    # Original dataset mid
+    # ---------------------------
+    # This is already present as df["mid_price"]
+    # We keep it as another fair-value-like reference.
+    #
+    # Five fair value estimators we track:
+    #   1) touch_mid
+    #   2) boundary_mid
+    #   3) size_wall_mid
+    #   4) side_vwap_mid
+    #   5) full_book_vwap_center
+    # And compare them to the dataset mid_price.
+
+    # ---------------------------
+    # Depth / imbalance
+    # ---------------------------
+    df["frontier_bid_vol"] = df["bid_volume_1"]
+    df["frontier_ask_vol"] = df["ask_volume_1"]
+
+    df["frontier_imbalance"] = (
+        (df["frontier_bid_vol"] - df["frontier_ask_vol"]) /
+        (df["frontier_bid_vol"] + df["frontier_ask_vol"])
+    )
+
+    df["bid_depth_total"] = df[bid_vol_cols].sum(axis=1, min_count=1)
+    df["ask_depth_total"] = df[ask_vol_cols].sum(axis=1, min_count=1)
+    df["depth_imbalance"] = (
+        (df["bid_depth_total"] - df["ask_depth_total"]) /
+        (df["bid_depth_total"] + df["ask_depth_total"])
+    )
+
+    df["size_wall_vol_imbalance"] = (
+        (df["size_wall_bid_vol"] - df["size_wall_ask_vol"]) /
+        (df["size_wall_bid_vol"] + df["size_wall_ask_vol"])
+    )
+
+    # ---------------------------
+    # Layer 2: relative dislocations / correspondence
+    # ---------------------------
+    fair_value_cols = [
+        "touch_mid",
+        "boundary_mid",
+        "size_wall_mid",
+        "side_vwap_mid",
+        "full_book_vwap_center",
+        "mid_price",
+    ]
+
+    for c in fair_value_cols:
+        df[f"{c}_minus_touch_mid"] = df[c] - df["touch_mid"]
+
+    df["boundary_minus_touch_width"] = df["boundary_width"] - df["touch_spread"]
+    df["sizewall_minus_touch_width"] = df["size_wall_width"] - df["touch_spread"]
+    df["side_vwap_skew"] = df["ask_vwap_center"] - df["bid_vwap_center"]
+
+    # ---------------------------
+    # Future price targets
+    # ---------------------------
+    grp = df.groupby(["product", "day"])
+    df[f"fwd_touch_mid_change_{HORIZON}"] = grp["touch_mid"].shift(-HORIZON) - df["touch_mid"]
+    df[f"fwd_dataset_mid_change_{HORIZON}"] = grp["mid_price"].shift(-HORIZON) - df["mid_price"]
+
+    df[f"fwd_direction_{HORIZON}"] = np.where(
+        df[f"fwd_touch_mid_change_{HORIZON}"] > 0, 1,
+        np.where(df[f"fwd_touch_mid_change_{HORIZON}"] < 0, -1, 0)
+    )
+
+    # Future max/min over next HORIZON rows for break/bounce style tests
+    df[f"future_max_touch_mid_{HORIZON}"] = grp["touch_mid"].transform(
+        lambda s: s.shift(-1).rolling(HORIZON, min_periods=1).max()
+    )
+    df[f"future_min_touch_mid_{HORIZON}"] = grp["touch_mid"].transform(
+        lambda s: s.shift(-1).rolling(HORIZON, min_periods=1).min()
+    )
+
+    return df
