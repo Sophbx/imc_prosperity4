@@ -184,3 +184,27 @@ def test_build_book_features_touch_mid_matches_dataset_mid_for_normal_rows():
     mask = book["mid_price"] > 0
     diff = (book.loc[mask, "touch_mid"] - book.loc[mask, "mid_price"]).abs()
     assert diff.max() <= 1e-9
+
+
+def test_build_trade_features_returns_agg_and_raw_trades():
+    prices = helpers.load_prices(DATA_DIR, ["prices_round_3_day_0.csv"])
+    trades = helpers.load_trades(DATA_DIR, ["trades_round_3_day_0.csv"])
+    book = helpers.build_book_features(prices)
+    agg, raw_trades = helpers.build_trade_features(trades, book)
+    # agg has per-tick aggregates
+    assert "trade_sign_proxy" in agg.columns
+    assert "next_trade_sign_proxy" in agg.columns
+    assert set(agg["trade_sign_proxy"].dropna().unique()).issubset({-1.0, 0.0, 1.0})
+    # raw_trades has the per-trade location
+    assert "trade_location" in raw_trades.columns
+
+
+def test_merge_book_and_trade_attaches_agg_columns():
+    prices = helpers.load_prices(DATA_DIR, ["prices_round_3_day_0.csv"])
+    trades = helpers.load_trades(DATA_DIR, ["trades_round_3_day_0.csv"])
+    book = helpers.build_book_features(prices)
+    agg, _ = helpers.build_trade_features(trades, book)
+    merged = helpers.merge_book_and_trade(book, agg)
+    for col in ["trade_count", "trade_volume", "trade_sign_proxy",
+                "next_trade_sign_proxy", "frac_at_or_above_ask_touch"]:
+        assert col in merged.columns
