@@ -172,6 +172,92 @@ print(f"intrinsic-floor violations: {len(viols)} rows "
 if len(viols):
     display(viols.groupby("strike").size().rename("violations"))""")
 
+# ---------- Part D: Implied volatility ----------
+md("## D. Implied volatility core")
+
+md("""Implied volatility (IV) is the sigma that makes the BS price match the
+observed voucher mid. Plotted vs strike at a snapshot, the U-shape is the
+**smile** — far-from-money options are richer on a vol basis than at-the-money.""")
+
+py("""# Downsample for IV solves. Keep a copy of raw 'v' for plots that don't need IV.
+iv_rows = v.iloc[::IV_DOWNSAMPLE].copy().reset_index(drop=True)
+print(f"IV solve rows: {len(iv_rows):,}")
+
+def _iv(row):
+    return helpers.implied_vol_call(
+        price=float(row["mid_price"]),
+        S=float(row["underlying_mid"]),
+        K=float(row["strike"]),
+        T=float(row["tte_years"]),
+    )
+
+iv_rows["iv"] = iv_rows.apply(_iv, axis=1)
+finite = iv_rows["iv"].notna().mean()
+print(f"finite IV fraction: {finite:.3f}")""")
+
+py("""fig, ax = plt.subplots(figsize=(13, 5))
+for K in STRIKES:
+    s = iv_rows[iv_rows["strike"] == K].sort_values(["day", "timestamp"])
+    if s["iv"].notna().sum() == 0:
+        continue
+    x = s["timestamp"].to_numpy() + s["day"].to_numpy() * helpers.TIMESTAMPS_PER_DAY
+    ax.plot(x, s["iv"].to_numpy(), label=f"VEV_{K}", lw=0.6)
+ax.set_title("Implied volatility time series per strike")
+ax.legend(ncol=5, fontsize=8, loc="upper right")
+plt.tight_layout()
+plt.show()""")
+
+py("""SNAPSHOTS = [
+    (0, 0),
+    (1, helpers.TIMESTAMPS_PER_DAY - 1),
+    (2, helpers.TIMESTAMPS_PER_DAY - 1),
+]
+
+def nearest_snapshot(day, ts, window=1000):
+    mask = (iv_rows["day"] == day) & (iv_rows["timestamp"].between(ts - window, ts + window))
+    return iv_rows[mask]
+
+fig, ax = plt.subplots(figsize=(11, 5))
+for (d, ts), color in zip(SNAPSHOTS, sns.color_palette("tab10")):
+    snap = nearest_snapshot(d, ts).dropna(subset=["iv"])
+    if snap.empty:
+        continue
+    smile = snap.groupby("strike")["iv"].mean().reset_index()
+    ax.plot(smile["strike"], smile["iv"], marker="o",
+            label=f"day {d}, ts≈{ts}", color=color)
+ax.set_xlabel("strike")
+ax.set_ylabel("implied vol")
+ax.set_title("Volatility smile at 3 snapshots")
+ax.legend()
+plt.tight_layout()
+plt.show()""")
+
+py("""fig, ax = plt.subplots(figsize=(12, 5))
+stats = (iv_rows.dropna(subset=["iv"])
+                .groupby("strike")["iv"]
+                .agg(["mean", "std", "min", "max", "count"])
+                .reset_index())
+display(stats)
+for K in STRIKES:
+    s = iv_rows[(iv_rows["strike"] == K) & iv_rows["iv"].notna()]
+    if len(s) < 10:
+        continue
+    ax.hist(s["iv"], bins=40, alpha=0.3, label=f"VEV_{K}")
+ax.set_title("IV distribution per strike")
+ax.legend(ncol=5, fontsize=8)
+plt.tight_layout()
+plt.show()""")
+
+py("""# Rich/cheap: iv - median_iv_across_strikes at the same (day, timestamp)
+piv = (iv_rows.dropna(subset=["iv"])
+              .pivot_table(index=["day", "timestamp"], columns="strike", values="iv"))
+median_iv = piv.median(axis=1)
+rich_cheap = piv.subtract(median_iv, axis=0)
+rc_summary = rich_cheap.mean().rename("mean_iv_vs_median").to_frame()
+rc_summary["abs"] = rc_summary["mean_iv_vs_median"].abs()
+rc_summary = rc_summary.sort_values("abs", ascending=False).drop(columns="abs")
+display(rc_summary)""")
+
 # emit
 for kind, src in C:
     if kind == "md":
