@@ -123,6 +123,55 @@ spread = (v.assign(spread=v["ask_price_1"] - v["bid_price_1"])
 per_strike = per_strike.drop(columns="mean_spread").merge(spread, on="strike")
 display(per_strike)""")
 
+# ---------- Part C: Voucher <-> underlying ----------
+md("## C. Voucher ↔ underlying relationship")
+
+md("""If a voucher is a real option, its mid should move with the underlying.
+The scatter slope per strike is an empirical delta.
+
+Moneyness = underlying / strike. Moneyness < 1 = out-of-money, > 1 = in-the-money.""")
+
+py("""fig, axes = plt.subplots(3, 4, figsize=(18, 11))
+slopes = {}
+for ax, K in zip(axes.ravel(), STRIKES):
+    s = v[v["strike"] == K].dropna(subset=["mid_price", "underlying_mid"])
+    if len(s) < 100:
+        ax.axis("off"); continue
+    ax.scatter(s["underlying_mid"], s["mid_price"], s=2, alpha=0.3)
+    slope, intercept = np.polyfit(s["underlying_mid"].to_numpy(float),
+                                  s["mid_price"].to_numpy(float), 1)
+    slopes[K] = slope
+    xs = np.linspace(s["underlying_mid"].min(), s["underlying_mid"].max(), 50)
+    ax.plot(xs, slope * xs + intercept, color="red", lw=1.0)
+    mean_money = s["moneyness"].mean()
+    ax.set_title(f"VEV_{K}: slope={slope:.3f}  moneyness≈{mean_money:.3f}")
+for ax in axes.ravel()[len(STRIKES):]:
+    ax.axis("off")
+plt.tight_layout()
+plt.show()
+print("Empirical deltas:", {k: round(s, 4) for k, s in slopes.items()})""")
+
+py("""ROLL = 500
+fig, ax = plt.subplots(figsize=(13, 4))
+for K in STRIKES:
+    s = v[v["strike"] == K].sort_values(["day", "timestamp"]).copy()
+    s["voucher_ret"] = s.groupby("day")["mid_price"].diff()
+    s["underlying_ret"] = s.groupby("day")["underlying_mid"].diff()
+    rc = (s[["voucher_ret", "underlying_ret"]]
+            .rolling(ROLL).corr().unstack()["voucher_ret"]["underlying_ret"])
+    ax.plot(rc.to_numpy(), label=f"VEV_{K}", lw=0.8)
+ax.set_title(f"Rolling-{ROLL} correlation of tick returns vs underlying")
+ax.legend(ncol=5, fontsize=8, loc="lower center")
+plt.tight_layout()
+plt.show()""")
+
+py("""viols = v.assign(intrinsic=np.maximum(v["underlying_mid"] - v["strike"], 0))
+viols = viols[viols["mid_price"] < viols["intrinsic"] - 1e-6]
+print(f"intrinsic-floor violations: {len(viols)} rows "
+      f"({100*len(viols)/max(len(v), 1):.3f}%)")
+if len(viols):
+    display(viols.groupby("strike").size().rename("violations"))""")
+
 # emit
 for kind, src in C:
     if kind == "md":
