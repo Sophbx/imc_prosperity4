@@ -85,6 +85,59 @@ $$ \pi_{b_2} = \begin{cases} 920 - b_2 & b_2 > \overline{b_2} \\ \dfrac{(920 - \
 
 Stages II and III explore how the optimum responds to different assumptions about $\overline{b_2}$.""")
 
+# ---------- Stage II: grid search at one assumed avg_b2 ----------
+md(r"""## Stage II — grid search at a fixed $\overline{b_2}$
+
+Pick a starting guess for the population's average second bid. Plausible
+anchors:
+
+- $\overline{b_2} = 791$ — if everyone plays single-bid optimum and forgets b2.
+- $\overline{b_2} \approx 850$ — midpoint of the upper half of the reserve range.
+
+Below: heatmap of $E$ over the full $(b_1, b_2)$ grid at $\overline{b_2} = 791$.
+Optimum marked.""")
+
+py("""def expected_profit(b1, b2, avg_b2):
+    k1 = int((RESERVES < b1).sum())
+    k2 = int((RESERVES < b2).sum())
+    e_b1 = (k1 / N_RESERVES) * (SELL_PRICE - b1)
+    if b2 > avg_b2:
+        prof_b2 = SELL_PRICE - b2
+    else:
+        # b2 <= avg_b2: penalised
+        prof_b2 = (SELL_PRICE - b2) * ((SELL_PRICE - avg_b2) / (SELL_PRICE - b2)) ** 3
+    e_b2 = ((k2 - k1) / N_RESERVES) * prof_b2
+    return e_b1 + e_b2
+
+ASSUMED_AVG_B2 = 791
+
+records = []
+for b1 in B1_GRID:
+    for b2 in B1_GRID:
+        if b2 <= b1:
+            continue
+        records.append({
+            "b1": int(b1),
+            "b2": int(b2),
+            "E": expected_profit(int(b1), int(b2), ASSUMED_AVG_B2),
+        })
+sweep = pd.DataFrame(records)
+opt2 = sweep.loc[sweep["E"].idxmax()]
+print(f"At avg_b2 = {ASSUMED_AVG_B2}: optimal (b1, b2) = "
+      f"({int(opt2['b1'])}, {int(opt2['b2'])}), E = {opt2['E']:.4f}")
+
+heat = sweep.pivot(index="b1", columns="b2", values="E")
+fig, ax = plt.subplots(figsize=(12, 8))
+sns.heatmap(heat, ax=ax, cmap="viridis", cbar_kws={"label": "E[profit] per NPC"})
+ax.invert_yaxis()
+ax.set_title(f"E[profit] heatmap at avg_b2 = {ASSUMED_AVG_B2}  |  "
+             f"optimum (b1={int(opt2['b1'])}, b2={int(opt2['b2'])})  E={opt2['E']:.2f}")
+plt.tight_layout(); plt.show()""")
+
+md(r"""**Read:** the optimum at $\overline{b_2}=791$ sits at the printed $(b_1, b_2)$.
+A wide bright region around it shows the surface is fairly flat near the peak,
+so small misjudgements about the average won't blow up the strategy.""")
+
 # ---------- emit ----------
 for kind, src in C:
     if kind == "md":
