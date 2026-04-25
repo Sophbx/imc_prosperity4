@@ -133,3 +133,29 @@ def test_implied_vol_above_cap_returns_nan():
 
 def test_implied_vol_zero_tte_returns_nan():
     assert math.isnan(helpers.implied_vol_call(1.0, 100, 100, 0.0))
+
+
+def test_tte_years_day0_start():
+    # day 0, timestamp 0 -> 8 days / 365
+    assert helpers.tte_years(0, 0) == pytest.approx(8 / 365, abs=1e-9)
+
+
+def test_tte_years_day0_midday():
+    # timestamp at half a day on day 0 -> (8 - 0.5) / 365
+    assert helpers.tte_years(0, helpers.TIMESTAMPS_PER_DAY // 2) == pytest.approx(
+        (8 - 0.5) / 365, abs=1e-6
+    )
+
+
+def test_tte_years_day2_end():
+    # day 2, last timestamp before day 3 -> ~(6 - 1) / 365
+    last = helpers.TIMESTAMPS_PER_DAY - 1
+    assert helpers.tte_years(2, last) == pytest.approx(
+        (6 - last / helpers.TIMESTAMPS_PER_DAY) / 365, abs=1e-6
+    )
+
+
+def test_constants_match_spec():
+    assert helpers.TIMESTAMPS_PER_DAY == 10_000
+    assert helpers.YEAR_DAYS == 365
+    assert helpers.TTE_DAYS_AT_DAY == {0: 8, 1: 7, 2: 6}

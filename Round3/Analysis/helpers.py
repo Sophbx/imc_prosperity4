@@ -161,3 +161,20 @@ def implied_vol_call(
         ))
     except ValueError:
         return float("nan")
+
+
+# ---------- Round 3 option conventions ----------
+
+TIMESTAMPS_PER_DAY = 10_000
+YEAR_DAYS = 365
+TTE_DAYS_AT_DAY = {0: 8, 1: 7, 2: 6}  # per wiki
+
+
+def tte_years(day: int, timestamp: int) -> float:
+    """Time to expiry in years for a Round 3 voucher at (day, timestamp).
+
+    Uses a linear intra-day schedule: TTE at start of day d is TTE_DAYS_AT_DAY[d] days,
+    decreasing linearly to TTE_DAYS_AT_DAY[d] - 1 over TIMESTAMPS_PER_DAY ticks.
+    """
+    days_remaining = TTE_DAYS_AT_DAY[day] - timestamp / TIMESTAMPS_PER_DAY
+    return days_remaining / YEAR_DAYS
