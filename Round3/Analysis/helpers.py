@@ -7,6 +7,7 @@ from __future__ import annotations
 import math
 import os
 import re
+from math import log, sqrt, exp, pi
 from typing import Iterable
 
 import numpy as np
@@ -81,3 +82,46 @@ def weighted_avg(values: Iterable[float], weights: Iterable[float]) -> float:
     if total == 0:
         return float("nan")
     return float((values * weights).sum() / total)
+
+
+# ---------- Black-Scholes (r=0 by default for Prosperity) ----------
+
+
+def _d1(S: float, K: float, T: float, sigma: float, r: float = 0.0) -> float:
+    return (log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * sqrt(T))
+
+
+def _norm_cdf(x: float) -> float:
+    return 0.5 * (1.0 + math.erf(x / sqrt(2.0)))
+
+
+def _norm_pdf(x: float) -> float:
+    return exp(-0.5 * x * x) / sqrt(2.0 * pi)
+
+
+def bs_call_price(S: float, K: float, T: float, sigma: float, r: float = 0.0) -> float:
+    """European call price. T in years, r continuously compounded, sigma annualized."""
+    if T <= 0 or sigma <= 0:
+        return max(S - K * exp(-r * T), 0.0)
+    d1 = _d1(S, K, T, sigma, r)
+    d2 = d1 - sigma * sqrt(T)
+    return S * _norm_cdf(d1) - K * exp(-r * T) * _norm_cdf(d2)
+
+
+def bs_call_delta(S: float, K: float, T: float, sigma: float, r: float = 0.0) -> float:
+    if T <= 0 or sigma <= 0:
+        return 1.0 if S > K else (0.5 if S == K else 0.0)
+    return _norm_cdf(_d1(S, K, T, sigma, r))
+
+
+def bs_call_vega(S: float, K: float, T: float, sigma: float, r: float = 0.0) -> float:
+    """Vega per 1.00 change in sigma (i.e. in *absolute* units, not per 1%)."""
+    if T <= 0 or sigma <= 0:
+        return 0.0
+    return S * _norm_pdf(_d1(S, K, T, sigma, r)) * sqrt(T)
+
+
+def bs_call_gamma(S: float, K: float, T: float, sigma: float, r: float = 0.0) -> float:
+    if T <= 0 or sigma <= 0:
+        return 0.0
+    return _norm_pdf(_d1(S, K, T, sigma, r)) / (S * sigma * sqrt(T))

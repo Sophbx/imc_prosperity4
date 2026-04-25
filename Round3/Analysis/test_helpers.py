@@ -79,3 +79,34 @@ def test_load_trades_reads_and_renames_symbol():
     assert {"day", "timestamp", "product", "price", "quantity"}.issubset(df.columns)
     assert set(df["day"].unique()) == {0, 1, 2}
     assert "symbol" not in df.columns, "load_trades should rename symbol -> product"
+
+
+def test_bs_call_price_atm_reference():
+    # S=K=100, T=1, r=0, sigma=0.20 -> 7.9656 per Hull ch.15
+    assert helpers.bs_call_price(100, 100, 1.0, 0.20) == pytest.approx(7.9656, abs=1e-3)
+
+
+def test_bs_call_price_intrinsic_when_expired():
+    # T=0 -> price == max(S-K, 0)
+    assert helpers.bs_call_price(110, 100, 0.0, 0.20) == pytest.approx(10.0)
+    assert helpers.bs_call_price(90, 100, 0.0, 0.20) == pytest.approx(0.0)
+
+
+def test_bs_call_delta_atm_around_half():
+    assert helpers.bs_call_delta(100, 100, 1.0, 0.20) == pytest.approx(0.5398, abs=1e-3)
+
+
+def test_bs_call_delta_deep_itm_near_one():
+    assert helpers.bs_call_delta(200, 100, 1.0, 0.20) == pytest.approx(1.0, abs=1e-3)
+
+
+def test_bs_call_delta_deep_otm_near_zero():
+    assert helpers.bs_call_delta(50, 100, 1.0, 0.20) == pytest.approx(0.0, abs=1e-3)
+
+
+def test_bs_call_vega_atm_reference():
+    assert helpers.bs_call_vega(100, 100, 1.0, 0.20) == pytest.approx(39.695, abs=1e-2)
+
+
+def test_bs_call_gamma_atm_reference():
+    assert helpers.bs_call_gamma(100, 100, 1.0, 0.20) == pytest.approx(0.01988, abs=1e-4)
