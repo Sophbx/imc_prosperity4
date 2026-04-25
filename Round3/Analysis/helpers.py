@@ -421,7 +421,8 @@ def build_trade_features(trades, book_df):
             "frac_at_or_above_ask_touch": (g["trade_location"] == "at_or_above_ask_touch").mean(),
             "frac_at_or_below_bid_touch": (g["trade_location"] == "at_or_below_bid_touch").mean(),
             "frac_inside_touch": (g["trade_location"] == "inside_touch").mean(),
-        })
+        }),
+        include_groups=False,
     ).reset_index()
 
     agg = agg.sort_values(["product", "day", "timestamp"]).reset_index(drop=True)
