@@ -110,3 +110,26 @@ def test_bs_call_vega_atm_reference():
 
 def test_bs_call_gamma_atm_reference():
     assert helpers.bs_call_gamma(100, 100, 1.0, 0.20) == pytest.approx(0.01988, abs=1e-4)
+
+
+def test_implied_vol_roundtrips():
+    # Compute BS price at sigma=0.25, then solve for IV; should recover 0.25.
+    price = helpers.bs_call_price(100, 100, 0.5, 0.25)
+    iv = helpers.implied_vol_call(price, 100, 100, 0.5)
+    assert iv == pytest.approx(0.25, abs=1e-4)
+
+
+def test_implied_vol_below_intrinsic_returns_nan():
+    # Price below max(S-K, 0) is impossible; return NaN.
+    iv = helpers.implied_vol_call(1.0, 200, 100, 0.5)  # intrinsic is 100
+    assert math.isnan(iv)
+
+
+def test_implied_vol_above_cap_returns_nan():
+    # Price above reasonable S cap (S=100, sigma cap 5.0) returns NaN.
+    iv = helpers.implied_vol_call(99.0, 100, 100, 0.5)
+    assert math.isnan(iv)
+
+
+def test_implied_vol_zero_tte_returns_nan():
+    assert math.isnan(helpers.implied_vol_call(1.0, 100, 100, 0.0))
