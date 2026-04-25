@@ -138,6 +138,79 @@ md(r"""**Read:** the optimum at $\overline{b_2}=791$ sits at the printed $(b_1, 
 A wide bright region around it shows the surface is fairly flat near the peak,
 so small misjudgements about the average won't blow up the strategy.""")
 
+# ---------- Stage III: sweep over avg_b2 ----------
+md(r"""## Stage III — sensitivity to $\overline{b_2}$
+
+For a range of plausible $\overline{b_2}$ values, find the corresponding
+optimal $(b_1, b_2)$ and expected profit. Two predictions to verify:
+
+- $b_1^\star$ is roughly stable (the penalty doesn't touch the first bid).
+- $b_2^\star$ tracks $\overline{b_2}$ closely (you want to barely beat the average).""")
+
+py("""AVG_GRID = [750, 775, 800, 825, 850, 875, 900]
+
+records = []
+for avg_b2 in AVG_GRID:
+    best = None
+    for b1 in B1_GRID:
+        for b2 in B1_GRID:
+            if b2 <= b1:
+                continue
+            e = expected_profit(int(b1), int(b2), avg_b2)
+            if best is None or e > best["E"]:
+                best = {"avg_b2": avg_b2, "b1": int(b1), "b2": int(b2), "E": e}
+    records.append(best)
+sensitivity = pd.DataFrame(records)
+display(sensitivity)""")
+
+py("""fig, axes = plt.subplots(1, 2, figsize=(14, 4))
+axes[0].plot(sensitivity["avg_b2"], sensitivity["b1"], marker="o", label="b1*")
+axes[0].plot(sensitivity["avg_b2"], sensitivity["b2"], marker="s", label="b2*")
+axes[0].set_xlabel("assumed avg_b2"); axes[0].set_ylabel("optimal bid")
+axes[0].set_title("Optimal bids vs assumed avg_b2"); axes[0].legend()
+
+axes[1].plot(sensitivity["avg_b2"], sensitivity["E"], marker="o", color="darkgreen")
+axes[1].set_xlabel("assumed avg_b2"); axes[1].set_ylabel("E[profit] per NPC")
+axes[1].set_title("Expected profit at each assumed avg_b2")
+plt.tight_layout(); plt.show()""")
+
+md(r"""## Submission
+
+Goal: pick a single $(b_1, b_2)$ that doesn't fall apart if our guess of
+$\overline{b_2}$ is off. The cell below maximizes the worst-case $E$ over a
+plausible range $\overline{b_2} \in [800, 850]$ — robust pick rather than
+point-optimal.""")
+
+py("""ROBUST_RANGE = list(range(800, 851, 5))   # 800, 805, ..., 850
+
+records = []
+for b1 in B1_GRID:
+    for b2 in B1_GRID:
+        if b2 <= b1:
+            continue
+        worst = min(expected_profit(int(b1), int(b2), avg_b2) for avg_b2 in ROBUST_RANGE)
+        records.append({"b1": int(b1), "b2": int(b2), "worst_E": worst})
+robust = pd.DataFrame(records)
+pick = robust.loc[robust["worst_E"].idxmax()]
+print(f"Robust pick: b1 = {int(pick['b1'])}, b2 = {int(pick['b2'])}")
+print(f"Worst-case E[profit] per NPC over avg_b2 in [800, 850]: {pick['worst_E']:.4f}")
+print()
+print("Sanity (E at each anchor):")
+for avg_b2 in [791, 800, 825, 850, 875]:
+    e = expected_profit(int(pick["b1"]), int(pick["b2"]), avg_b2)
+    print(f"  avg_b2 = {avg_b2}: E = {e:.4f}")""")
+
+md(r"""### Final picks
+
+The cell above prints the robust $(b_1, b_2)$. Submit those numbers in the
+Manual Challenge UI before the round closes.
+
+Notes:
+- $b_1$ should still be near 791 — the penalty doesn't touch the first bid,
+  so the single-bid optimum dominates the first-bid choice.
+- $b_2$ shifts up to barely beat the assumed range $[800, 850]$, sacrificing
+  some best-case profit in exchange for not getting whacked by the penalty.""")
+
 # ---------- emit ----------
 for kind, src in C:
     if kind == "md":
