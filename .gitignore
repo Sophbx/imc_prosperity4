@@ -3,6 +3,7 @@
 
 # Internal working notes — kept local, not shared
 Round0/agents/
+Round3/Analysis/PLAN.md
 
 # Python
 __pycache__/
@@ -10,6 +11,7 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+.pytest_cache/
 
 # Editor
 .vscode/
