@@ -52,8 +52,8 @@ TRADE_FILES = [
 ]
 
 DELTA1_PRODUCTS = ["HYDROGEL_PACK", "VELVETFRUIT_EXTRACT"]
-VISIBLE_LEVELS = 3
-HORIZON = 10""")
+VISIBLE_LEVELS = helpers.VISIBLE_LEVELS  # single source of truth in helpers.py
+HORIZON = helpers.HORIZON""")
 
 py("""prices_all = helpers.load_prices(DATA_DIR, PRICE_FILES)
 trades_all = helpers.load_trades(DATA_DIR, TRADE_FILES)
