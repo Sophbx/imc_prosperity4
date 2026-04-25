@@ -4,6 +4,8 @@
 # Internal working notes — kept local, not shared
 Round0/agents/
 Round3/Analysis/PLAN.md
+Round3/Manual/DESIGN.md
+Round3/Manual/PLAN.md
 
 # Python
 __pycache__/
