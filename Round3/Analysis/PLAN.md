@@ -166,8 +166,6 @@ cd "imc_prosperity4" && \
 git add Round3/Analysis/helpers.py Round3/Analysis/test_helpers.py && \
 git commit -m "$(cat <<'EOF'
 Round 3 helpers: math utilities + filename parser
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -274,8 +272,6 @@ cd "imc_prosperity4" && \
 git add Round3/Analysis/helpers.py Round3/Analysis/test_helpers.py && \
 git commit -m "$(cat <<'EOF'
 Round 3 helpers: load_prices / load_trades
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -399,8 +395,6 @@ cd "imc_prosperity4" && \
 git add Round3/Analysis/helpers.py Round3/Analysis/test_helpers.py && \
 git commit -m "$(cat <<'EOF'
 Round 3 helpers: Black-Scholes call primitives
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -507,8 +501,6 @@ cd "imc_prosperity4" && \
 git add Round3/Analysis/helpers.py Round3/Analysis/test_helpers.py && \
 git commit -m "$(cat <<'EOF'
 Round 3 helpers: implied volatility solver
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -601,8 +593,6 @@ cd "imc_prosperity4" && \
 git add Round3/Analysis/helpers.py Round3/Analysis/test_helpers.py && \
 git commit -m "$(cat <<'EOF'
 Round 3 helpers: TTE schedule and constants
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -703,8 +693,6 @@ cd "imc_prosperity4" && \
 git add Round3/Analysis/helpers.py Round3/Analysis/test_helpers.py && \
 git commit -m "$(cat <<'EOF'
 Round 3 helpers: port build_book_features from Round 1
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -801,8 +789,6 @@ cd "imc_prosperity4" && \
 git add Round3/Analysis/helpers.py Round3/Analysis/test_helpers.py && \
 git commit -m "$(cat <<'EOF'
 Round 3 helpers: port build_trade_features and merge_book_and_trade
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1032,8 +1018,6 @@ cd "imc_prosperity4" && \
 git add Round3/Analysis/build_delta1_notebook.py Round3/Analysis/analysis_delta1.ipynb && \
 git commit -m "$(cat <<'EOF'
 Round 3 delta-1 notebook: setup + cross-product overview
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1252,8 +1236,6 @@ cd "imc_prosperity4" && \
 git add Round3/Analysis/build_delta1_notebook.py Round3/Analysis/analysis_delta1.ipynb Round3/Analysis/output/ && \
 git commit -m "$(cat <<'EOF'
 Round 3 delta-1 notebook: per-product drill-down + exports
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1430,8 +1412,6 @@ cd "imc_prosperity4" && \
 git add Round3/Analysis/build_options_notebook.py Round3/Analysis/analysis_options.ipynb && \
 git commit -m "$(cat <<'EOF'
 Round 3 options notebook: setup + price behaviour
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1516,8 +1496,6 @@ cd "imc_prosperity4" && \
 git add Round3/Analysis/build_options_notebook.py Round3/Analysis/analysis_options.ipynb && \
 git commit -m "$(cat <<'EOF'
 Round 3 options notebook: voucher <-> underlying relationship
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1656,8 +1634,6 @@ cd "imc_prosperity4" && \
 git add Round3/Analysis/build_options_notebook.py Round3/Analysis/analysis_options.ipynb && \
 git commit -m "$(cat <<'EOF'
 Round 3 options notebook: implied volatility core
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1771,8 +1747,6 @@ cd "imc_prosperity4" && \
 git add Round3/Analysis/build_options_notebook.py Round3/Analysis/analysis_options.ipynb Round3/Analysis/output/ && \
 git commit -m "$(cat <<'EOF'
 Round 3 options notebook: exports and findings section
-
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
