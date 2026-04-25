@@ -165,7 +165,7 @@ def implied_vol_call(
 
 # ---------- Round 3 option conventions ----------
 
-TIMESTAMPS_PER_DAY = 10_000
+TIMESTAMPS_PER_DAY = 1_000_000  # actual data: timestamps run 0..999900 in steps of 100
 YEAR_DAYS = 365
 TTE_DAYS_AT_DAY = {0: 8, 1: 7, 2: 6}  # per wiki
 

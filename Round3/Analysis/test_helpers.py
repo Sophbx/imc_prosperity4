@@ -156,7 +156,7 @@ def test_tte_years_day2_end():
 
 
 def test_constants_match_spec():
-    assert helpers.TIMESTAMPS_PER_DAY == 10_000
+    assert helpers.TIMESTAMPS_PER_DAY == 1_000_000
     assert helpers.YEAR_DAYS == 365
     assert helpers.TTE_DAYS_AT_DAY == {0: 8, 1: 7, 2: 6}
 
