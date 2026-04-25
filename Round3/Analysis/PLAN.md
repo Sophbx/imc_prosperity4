@@ -284,7 +284,7 @@ EOF
 
 ## Task 3: Black–Scholes primitives (`bs_call_price`, `bs_call_delta`, `bs_call_vega`, `bs_call_gamma`)
 
-Why these specific reference values: for an at-the-money European call with `S=K=100, T=1, r=0, σ=0.20`, Hull's *Options, Futures, and Other Derivatives* gives price ≈ 7.9656, delta ≈ 0.5398, vega ≈ 37.524, gamma ≈ 0.01988. These are the canonical cross-checks for a BS implementation.
+Why these specific reference values: for an at-the-money European call with `S=K=100, T=1, r=0, σ=0.20`, the standard BS formula gives price ≈ 7.9656, delta ≈ 0.5398, vega ≈ 39.695 (per unit σ; verified S·φ(d1)·√T = 100·0.396953·1), gamma ≈ 0.01988. These are the canonical cross-checks for a BS implementation.
 
 **Files:**
 - Modify: `imc_prosperity4/Round3/Analysis/helpers.py`
@@ -319,7 +319,7 @@ def test_bs_call_delta_deep_otm_near_zero():
 
 
 def test_bs_call_vega_atm_reference():
-    assert helpers.bs_call_vega(100, 100, 1.0, 0.20) == pytest.approx(37.524, abs=1e-2)
+    assert helpers.bs_call_vega(100, 100, 1.0, 0.20) == pytest.approx(39.695, abs=1e-2)
 
 
 def test_bs_call_gamma_atm_reference():
