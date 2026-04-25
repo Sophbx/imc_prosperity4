@@ -12,6 +12,7 @@ from typing import Iterable
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import brentq
 
 
 # ---------- data loading ----------
@@ -125,3 +126,38 @@ def bs_call_gamma(S: float, K: float, T: float, sigma: float, r: float = 0.0) ->
     if T <= 0 or sigma <= 0:
         return 0.0
     return _norm_pdf(_d1(S, K, T, sigma, r)) / (S * sigma * sqrt(T))
+
+
+def implied_vol_call(
+    price: float,
+    S: float,
+    K: float,
+    T: float,
+    r: float = 0.0,
+    lo: float = 1e-4,
+    hi: float = 5.0,
+    tol: float = 1e-6,
+) -> float:
+    """Solve BS implied vol for a European call via Brent's method.
+
+    Returns NaN when:
+    - T <= 0 (expired)
+    - price is below intrinsic value max(S - K*exp(-rT), 0)
+    - price sits above the value implied by sigma = hi (we don't extrapolate)
+    """
+    if T <= 0 or price <= 0 or S <= 0 or K <= 0:
+        return float("nan")
+    intrinsic = max(S - K * exp(-r * T), 0.0)
+    if price < intrinsic - tol:
+        return float("nan")
+    f_lo = bs_call_price(S, K, T, lo, r) - price
+    f_hi = bs_call_price(S, K, T, hi, r) - price
+    if f_lo > 0 or f_hi < 0:
+        return float("nan")
+    try:
+        return float(brentq(
+            lambda sigma: bs_call_price(S, K, T, sigma, r) - price,
+            lo, hi, xtol=tol,
+        ))
+    except ValueError:
+        return float("nan")
