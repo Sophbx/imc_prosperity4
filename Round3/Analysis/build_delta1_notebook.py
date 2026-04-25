@@ -163,6 +163,175 @@ for d in sorted(df_clean["day"].unique()):
     })
 display(pd.DataFrame(rows))""")
 
+# ---------- Part C: Per-product drill-down ----------
+md("## C. Per-product drill-down")
+
+md("Each cell loops over both delta-1 products and emits one figure per product.")
+
+py("""def describe_static_geometry(x, prod):
+    summary = {
+        "touch_spread_mean":    x["touch_spread"].mean(),
+        "touch_spread_median":  x["touch_spread"].median(),
+        "boundary_width_mean":  x["boundary_width"].mean(),
+        "size_wall_width_mean": x["size_wall_width"].mean(),
+        "rows":                 len(x),
+    }
+    return summary
+
+geom_rows = []
+for prod in DELTA1_PRODUCTS:
+    x = df_clean[df_clean["product"] == prod]
+    geom_rows.append({"product": prod, **describe_static_geometry(x, prod)})
+display(pd.DataFrame(geom_rows))""")
+
+py("""fig, axes = plt.subplots(len(DELTA1_PRODUCTS), 2,
+                         figsize=(13, 3.5 * len(DELTA1_PRODUCTS)))
+if len(DELTA1_PRODUCTS) == 1:
+    axes = axes.reshape(1, -1)
+for row, prod in enumerate(DELTA1_PRODUCTS):
+    x = df_clean[df_clean["product"] == prod]
+    sns.histplot(x["touch_spread"], bins=40, ax=axes[row, 0])
+    axes[row, 0].set_title(f"{prod}: touch_spread")
+    sns.histplot(x["size_wall_width"], bins=40, ax=axes[row, 1])
+    axes[row, 1].set_title(f"{prod}: size_wall_width")
+plt.tight_layout()
+plt.show()""")
+
+py("""FAIR_VALUE_COLS = [
+    "touch_mid", "boundary_mid", "size_wall_mid",
+    "side_vwap_mid", "full_book_vwap_center", "mid_price",
+]
+
+for prod in DELTA1_PRODUCTS:
+    x = df_clean[df_clean["product"] == prod]
+    corr = x[FAIR_VALUE_COLS].corr()
+    fig, ax = plt.subplots(figsize=(6.5, 5))
+    sns.heatmap(corr, annot=True, fmt=".3f", cmap="coolwarm", center=0, ax=ax)
+    ax.set_title(f"{prod}: fair-value estimator correlation")
+    plt.tight_layout()
+    plt.show()""")
+
+py("""PREDICTOR_FEATURES = [
+    "touch_spread", "boundary_width", "size_wall_width",
+    "frontier_imbalance", "depth_imbalance", "size_wall_vol_imbalance",
+    "boundary_mid_minus_touch_mid", "size_wall_mid_minus_touch_mid",
+    "side_vwap_mid_minus_touch_mid", "full_book_vwap_center_minus_touch_mid",
+    "mid_price_minus_touch_mid",
+]
+target_change = f"fwd_touch_mid_change_{HORIZON}"
+target_dir    = f"fwd_direction_{HORIZON}"
+
+pred_rows = []
+for prod in DELTA1_PRODUCTS:
+    x = df_clean[df_clean["product"] == prod]
+    for feat in PREDICTOR_FEATURES:
+        if feat not in x.columns:
+            continue
+        pred_rows.append({
+            "product": prod,
+            "feature": feat,
+            "corr_with_fwd_change":    helpers.safe_corr(x[feat], x[target_change]),
+            "corr_with_fwd_direction": helpers.safe_corr(x[feat], x[target_dir]),
+        })
+pred_df = (pd.DataFrame(pred_rows)
+             .assign(abs_corr=lambda d: d["corr_with_fwd_change"].abs())
+             .sort_values(["product", "abs_corr"], ascending=[True, False])
+             .drop(columns="abs_corr"))
+display(pred_df)""")
+
+py("""rows = []
+for prod in DELTA1_PRODUCTS:
+    t = raw_trades[raw_trades["product"] == prod].copy()
+    if "trade_location" not in t.columns:
+        continue
+    loc = t["trade_location"].value_counts(dropna=False).to_frame("count")
+    loc["fraction"] = loc["count"] / loc["count"].sum()
+    loc["product"] = prod
+    rows.append(loc.reset_index().rename(columns={"index": "trade_location"}))
+if rows:
+    display(pd.concat(rows, ignore_index=True))
+else:
+    print("No trade_location column — check build_trade_features output.")""")
+
+py("""next_sign_rows = []
+for prod in DELTA1_PRODUCTS:
+    x = df_clean[df_clean["product"] == prod]
+    if "next_trade_sign_proxy" not in x.columns:
+        continue
+    for feat in ["frontier_imbalance", "depth_imbalance", "size_wall_vol_imbalance",
+                 "touch_spread", "boundary_width"]:
+        next_sign_rows.append({
+            "product": prod,
+            "feature": feat,
+            "corr_with_next_trade_sign": helpers.safe_corr(x[feat], x["next_trade_sign_proxy"]),
+        })
+next_sign_df = pd.DataFrame(next_sign_rows)
+display(next_sign_df)""")
+
+# ---------- Part D: VELVETFRUIT-specific ----------
+md("## D. VELVETFRUIT_EXTRACT — underlying of vouchers")
+
+md("""`VELVETFRUIT_EXTRACT` is the underlying of the 10 VEV vouchers. Its realized
+volatility directly feeds the options book — see `analysis_options.ipynb`.""")
+
+py("""vev = df_clean[df_clean["product"] == "VELVETFRUIT_EXTRACT"].sort_values(["day", "timestamp"]).copy()
+vev["ret"] = vev.groupby("day")["mid_price"].diff()
+
+rv_frames = []
+for win in (100, 500, 2000):
+    rv = vev.groupby("day")["ret"].transform(lambda s: s.rolling(win).std())
+    rv_frames.append(rv.rename(f"rv_{win}"))
+rv_df = pd.concat([vev[["day", "timestamp"]].reset_index(drop=True)] +
+                  [f.reset_index(drop=True) for f in rv_frames], axis=1)
+display(rv_df.describe())
+
+fig, ax = plt.subplots(figsize=(12, 4))
+for col in [f"rv_{w}" for w in (100, 500, 2000)]:
+    ax.plot(rv_df[col].to_numpy(), label=col, lw=0.8)
+ax.set_title("VELVETFRUIT_EXTRACT realized volatility of tick returns")
+ax.legend()
+plt.tight_layout()
+plt.show()""")
+
+# ---------- Part E: Exports ----------
+md("## E. Artifact exports")
+
+py("""# delta1_feature_summary.csv
+summary_rows = []
+for prod in DELTA1_PRODUCTS:
+    x = df_clean[df_clean["product"] == prod]
+    summary_rows.append({
+        "product": prod,
+        "rows": len(x),
+        "touch_spread_mean": x["touch_spread"].mean(),
+        "touch_spread_median": x["touch_spread"].median(),
+        "boundary_width_mean": x["boundary_width"].mean(),
+        "size_wall_width_mean": x["size_wall_width"].mean(),
+        "mean_mid_price": x["mid_price"].mean(),
+        "per_day_drift_slope_mean": (drift[drift["product"] == prod]["slope_per_tick"].mean()
+                                      if not drift.empty else float("nan")),
+    })
+summary_df = pd.DataFrame(summary_rows)
+summary_df.to_csv(os.path.join(OUTPUT_DIR, "delta1_feature_summary.csv"), index=False)
+
+# delta1_predictor_ranking.csv
+ranking = pred_df.merge(next_sign_df, on=["product", "feature"], how="outer")
+ranking.to_csv(os.path.join(OUTPUT_DIR, "delta1_predictor_ranking.csv"), index=False)
+
+# velvetfruit_realized_vol.csv
+rv_df.to_csv(os.path.join(OUTPUT_DIR, "velvetfruit_realized_vol.csv"), index=False)
+
+for name in ["delta1_feature_summary.csv",
+             "delta1_predictor_ranking.csv",
+             "velvetfruit_realized_vol.csv"]:
+    path = os.path.join(OUTPUT_DIR, name)
+    print(f"{name:40s} {os.path.getsize(path):>8,d} bytes")""")
+
+md("""### Next: `analysis_options.ipynb`
+
+The options notebook reuses `VELVETFRUIT_EXTRACT` as its underlying and pulls
+realized vol context from `output/velvetfruit_realized_vol.csv`.""")
+
 # ---------- emit notebook ----------
 for kind, src in C:
     if kind == "md":
