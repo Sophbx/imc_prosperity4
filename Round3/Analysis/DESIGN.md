@@ -82,7 +82,7 @@ implied_vol_call(price, S, K, T, r=0.0,
                  lo=1e-4, hi=5.0, tol=1e-6)  -> float   # NaN outside bounds
 
 # ---------- convention constants ----------
-TIMESTAMPS_PER_DAY = 10_000
+TIMESTAMPS_PER_DAY = 1_000_000           # max timestamp range per day (ticks run 0..999_900 step 100)
 YEAR_DAYS = 365
 TTE_DAYS_AT_DAY = {0: 8, 1: 7, 2: 6}          # per wiki
 tte_years(day, timestamp)                    -> float

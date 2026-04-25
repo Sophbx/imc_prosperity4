@@ -547,7 +547,11 @@ def test_tte_years_day2_end():
 
 
 def test_constants_match_spec():
-    assert helpers.TIMESTAMPS_PER_DAY == 10_000
+    # NOTE: TIMESTAMPS_PER_DAY is the *max timestamp range per day*, not the
+    # number of ticks per day. Round 3 timestamps run 0..999_900 stepping by 100
+    # (10_000 ticks per day), so the divisor for "fraction of day elapsed" is
+    # 1_000_000.
+    assert helpers.TIMESTAMPS_PER_DAY == 1_000_000
     assert helpers.YEAR_DAYS == 365
     assert helpers.TTE_DAYS_AT_DAY == {0: 8, 1: 7, 2: 6}
 ```
@@ -567,7 +571,7 @@ Append to `Round3/Analysis/helpers.py`:
 ```python
 # ---------- Round 3 option conventions ----------
 
-TIMESTAMPS_PER_DAY = 10_000
+TIMESTAMPS_PER_DAY = 1_000_000  # max timestamp range per day; Round 3 ticks run 0..999_900 step 100
 YEAR_DAYS = 365
 TTE_DAYS_AT_DAY = {0: 8, 1: 7, 2: 6}  # per wiki
 
@@ -576,7 +580,7 @@ def tte_years(day: int, timestamp: int) -> float:
     """Time to expiry in years for a Round 3 voucher at (day, timestamp).
 
     Uses a linear intra-day schedule: TTE at start of day d is TTE_DAYS_AT_DAY[d] days,
-    decreasing linearly to TTE_DAYS_AT_DAY[d] - 1 over TIMESTAMPS_PER_DAY ticks.
+    decreasing linearly to TTE_DAYS_AT_DAY[d] - 1 over the day's timestamp range.
     """
     days_remaining = TTE_DAYS_AT_DAY[day] - timestamp / TIMESTAMPS_PER_DAY
     return days_remaining / YEAR_DAYS
