@@ -362,3 +362,82 @@ def build_book_features(prices):
     )
 
     return df
+
+
+# ---------- trade feature engineering (ported from Round1/analysis_v2.py) ----------
+
+def build_trade_features(trades, book_df):
+    # Merge book touch mid into trades to infer trade direction proxy
+    trades = trades.copy()
+
+    mini_book = book_df[["product", "day", "timestamp", "touch_mid", "frontier_bid", "frontier_ask",
+                         "size_wall_bid", "size_wall_ask", "frontier_imbalance", "depth_imbalance",
+                         "size_wall_vol_imbalance"]].copy()
+
+    trades = trades.rename(columns={"symbol": "product"})
+    trades = trades.merge(mini_book, on=["product", "day", "timestamp"], how="left")
+
+    # Per-trade direction proxy by trade price vs touch mid
+    trades["trade_sign_proxy"] = trades.apply(
+        lambda r: next_trade_direction_from_price_vs_mid(r["price"], r["touch_mid"]), axis=1
+    )
+
+    # Trade location vs book: A
+    def classify_trade_location(row):
+        if pd.isna(row["price"]):
+            return "no_trade"
+        p = row["price"]
+        bid1 = row["frontier_bid"]
+        ask1 = row["frontier_ask"]
+        bw = row["size_wall_bid"]
+        aw = row["size_wall_ask"]
+
+        if pd.notna(ask1) and p >= ask1:
+            return "at_or_above_ask_touch"
+        if pd.notna(bid1) and p <= bid1:
+            return "at_or_below_bid_touch"
+        if pd.notna(bid1) and pd.notna(ask1) and bid1 < p < ask1:
+            return "inside_touch"
+
+        # extra rough wall markers
+        if pd.notna(aw) and p >= aw:
+            return "near_or_above_ask_wall"
+        if pd.notna(bw) and p <= bw:
+            return "near_or_below_bid_wall"
+
+        return "other"
+
+    trades["trade_location"] = trades.apply(classify_trade_location, axis=1)
+
+    grouped = trades.groupby(["product", "day", "timestamp"], dropna=False)
+
+    agg = grouped.apply(
+        lambda g: pd.Series({
+            "trade_count": len(g),
+            "trade_volume": g["quantity"].sum(),
+            "trade_vwap": weighted_avg(g["price"].to_numpy(), g["quantity"].to_numpy()),
+            "trade_price_mean": g["price"].mean(),
+            "trade_sign_proxy": np.sign(np.nansum(g["trade_sign_proxy"] * g["quantity"])),
+            "frac_at_or_above_ask_touch": (g["trade_location"] == "at_or_above_ask_touch").mean(),
+            "frac_at_or_below_bid_touch": (g["trade_location"] == "at_or_below_bid_touch").mean(),
+            "frac_inside_touch": (g["trade_location"] == "inside_touch").mean(),
+        })
+    ).reset_index()
+
+    agg = agg.sort_values(["product", "day", "timestamp"]).reset_index(drop=True)
+    agg["next_trade_sign_proxy"] = agg.groupby(["product", "day"])["trade_sign_proxy"].shift(-1)
+
+    return agg, trades
+
+
+def merge_book_and_trade(book_df, trade_agg):
+    df = book_df.merge(trade_agg, on=["product", "day", "timestamp"], how="left")
+
+    for c in ["trade_count", "trade_volume", "frac_at_or_above_ask_touch",
+              "frac_at_or_below_bid_touch", "frac_inside_touch"]:
+        df[c] = df[c].fillna(0)
+
+    df["trade_vwap_minus_touch_mid"] = df["trade_vwap"] - df["touch_mid"]
+    df["trade_vwap_minus_sizewall_mid"] = df["trade_vwap"] - df["size_wall_mid"]
+
+    return df
