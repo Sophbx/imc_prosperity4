@@ -258,6 +258,76 @@ rc_summary["abs"] = rc_summary["mean_iv_vs_median"].abs()
 rc_summary = rc_summary.sort_values("abs", ascending=False).drop(columns="abs")
 display(rc_summary)""")
 
+# ---------- Part E: Exports + findings ----------
+md("## E. Exports")
+
+py("""iv_export = iv_rows[["day", "timestamp", "strike", "mid_price",
+                      "underlying_mid", "moneyness", "tte_years", "iv"]].copy()
+iv_export = iv_export.rename(columns={"mid_price": "voucher_mid"})
+iv_export.to_csv(os.path.join(OUTPUT_DIR, "iv_timeseries.csv"), index=False)
+print("iv_timeseries.csv  rows:", len(iv_export))""")
+
+py("""summary_rows = []
+for K in STRIKES:
+    s = iv_rows[iv_rows["strike"] == K]
+    s_raw = v[v["strike"] == K]
+    summary_rows.append({
+        "strike": K,
+        "n_rows": len(s_raw),
+        "mean_spread": (s_raw["ask_price_1"] - s_raw["bid_price_1"]).mean(),
+        "mean_quoted_size_bid": s_raw["bid_volume_1"].fillna(0).mean(),
+        "mean_quoted_size_ask": s_raw["ask_volume_1"].fillna(0).mean(),
+        "mean_iv": s["iv"].mean(),
+        "iv_std": s["iv"].std(),
+        "empirical_delta": slopes.get(K, float("nan")),
+        "mean_moneyness": s_raw["moneyness"].mean(),
+    })
+voucher_summary = pd.DataFrame(summary_rows)
+voucher_summary.to_csv(os.path.join(OUTPUT_DIR, "voucher_price_summary.csv"), index=False)
+display(voucher_summary)""")
+
+py("""# Per-strike OLS slope, R^2, rolling correlation stats vs underlying
+rows = []
+ROLL = 500
+for K in STRIKES:
+    s = v[v["strike"] == K].sort_values(["day", "timestamp"]).copy()
+    if len(s) < 50:
+        continue
+    s["voucher_ret"] = s.groupby("day")["mid_price"].diff()
+    s["underlying_ret"] = s.groupby("day")["underlying_mid"].diff()
+    rc = (s[["voucher_ret", "underlying_ret"]]
+            .rolling(ROLL).corr().unstack()["voucher_ret"]["underlying_ret"])
+    ols_slope, ols_intercept = np.polyfit(
+        s["underlying_mid"].dropna().to_numpy(float),
+        s["mid_price"].dropna().to_numpy(float), 1,
+    ) if s[["underlying_mid", "mid_price"]].dropna().shape[0] > 1 else (float("nan"), float("nan"))
+    preds = ols_slope * s["underlying_mid"] + ols_intercept
+    ss_res = float(((s["mid_price"] - preds) ** 2).sum())
+    ss_tot = float(((s["mid_price"] - s["mid_price"].mean()) ** 2).sum())
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+    rows.append({
+        "strike": K,
+        "ols_slope": ols_slope,
+        "r_squared": r2,
+        "rolling_corr_mean": rc.mean(),
+        "rolling_corr_std": rc.std(),
+    })
+corr_summary = pd.DataFrame(rows)
+corr_summary.to_csv(os.path.join(OUTPUT_DIR, "voucher_underlying_corr.csv"), index=False)
+display(corr_summary)""")
+
+md("""### Findings
+
+_Fill in after running. The notebook is set up to answer:_
+
+- Which strikes are most/least liquid (see `voucher_price_summary.csv`).
+- Smile regime: classic smile, skew, or flat (see Part D smile plot).
+- Which strikes are persistently rich or cheap relative to the cross-strike
+  median IV (see Part D.6 table).
+- Empirical delta vs strike monotonicity check (Part C.2 scatters; deep-ITM
+  should approach 1).
+- Any intrinsic-floor violations (Part C.4).""")
+
 # emit
 for kind, src in C:
     if kind == "md":
