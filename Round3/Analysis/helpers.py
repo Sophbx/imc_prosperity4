@@ -24,6 +24,36 @@ def extract_day_from_filename(path: str) -> int:
     return int(m.group(1)) if m else 0
 
 
+def load_prices(data_dir: str, price_files: list[str]) -> pd.DataFrame:
+    """Load and concatenate Prosperity price CSVs.
+
+    CSVs are ';'-separated. Each row is augmented with an integer 'day' column
+    parsed from the filename if the column is missing.
+    """
+    frames = []
+    for fn in price_files:
+        df = pd.read_csv(os.path.join(data_dir, fn), sep=";")
+        if "day" not in df.columns:
+            df["day"] = extract_day_from_filename(fn)
+        frames.append(df)
+    return pd.concat(frames, ignore_index=True)
+
+
+def load_trades(data_dir: str, trade_files: list[str]) -> pd.DataFrame:
+    """Load and concatenate Prosperity trade CSVs.
+
+    Renames the 'symbol' column to 'product' for consistency with prices, and
+    tags each row with an integer 'day' from the filename.
+    """
+    frames = []
+    for fn in trade_files:
+        df = pd.read_csv(os.path.join(data_dir, fn), sep=";")
+        df = df.rename(columns={"symbol": "product"})
+        df["day"] = extract_day_from_filename(fn)
+        frames.append(df)
+    return pd.concat(frames, ignore_index=True)
+
+
 # ---------- tiny math utilities ----------
 
 def safe_corr(x, y) -> float:
