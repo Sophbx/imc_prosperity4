@@ -175,28 +175,42 @@ class Trader:
         bid_room = max(0, MAX_POSITION - position)
         ask_room = max(0, MAX_POSITION + position)
 
-        # Base quotes: improve over touch by 1.
-        buy_price = best_bid + 1
-        sell_price = best_ask - 1
-
-        # Smile clamp.
+        # Smile clamp / fair value (None => fall back to plain MM).
+        fair_px = None
         if smile is not None:
             a, b, c = smile
             m = u_mid / K
             fair_iv = a * m * m + b * m + c
             if fair_iv > 0:
                 fair_px = bs_call_price(u_mid, K, T, fair_iv)
+
+        # End-of-day flatten window: quote tighter at floor/ceil(fair) so leftover
+        # inventory bleeds out near fair value. If smile is unavailable, use touch_mid.
+        if ts_in_day > FLATTEN_WINDOW_START_TS:
+            if fair_px is not None:
+                buy_price = int(fair_px)
+                sell_price = int(round(fair_px + 0.5))
+            else:
+                touch_mid = (best_bid + best_ask) / 2.0
+                buy_price = int(touch_mid)
+                sell_price = int(round(touch_mid + 0.5))
+        else:
+            # Normal MM: improve by 1, smile-clamped if available.
+            buy_price = best_bid + 1
+            sell_price = best_ask - 1
+            if fair_px is not None:
                 buy_price = min(buy_price, int(fair_px))
                 sell_price = max(sell_price, int(round(fair_px + 0.5)))
 
-        # Don't cross the book passively.
+        # Never cross the book passively.
         if buy_price >= best_ask:
             buy_price = best_ask - 1
         if sell_price <= best_bid:
             sell_price = best_bid + 1
 
-        bid_qty = min(QUOTE_SIZE, bid_room)
-        ask_qty = min(QUOTE_SIZE, ask_room)
+        # Inventory skew: when |position| > SOFT_INVENTORY_LIMIT, shrink the
+        # side that adds inventory and let the other side clear.
+        bid_qty, ask_qty = self._sized_quotes(position, bid_room, ask_room)
 
         orders = []
         if bid_qty > 0:
@@ -204,6 +218,24 @@ class Trader:
         if ask_qty > 0:
             orders.append(Order(symbol, int(sell_price), -int(ask_qty)))
         return orders
+
+    @staticmethod
+    def _sized_quotes(position, bid_room, ask_room):
+        # Linear shrink from |pos|=SOFT_INVENTORY_LIMIT toward 0 at |pos|=MAX_POSITION.
+        if position > SOFT_INVENTORY_LIMIT:
+            shrink = (position - SOFT_INVENTORY_LIMIT) / (MAX_POSITION - SOFT_INVENTORY_LIMIT)
+            shrink = min(1.0, max(0.0, shrink))
+            bid_qty = max(MIN_QUOTE_SIZE, int(round(QUOTE_SIZE * (1.0 - shrink))))
+            ask_qty = QUOTE_SIZE
+        elif position < -SOFT_INVENTORY_LIMIT:
+            shrink = (-position - SOFT_INVENTORY_LIMIT) / (MAX_POSITION - SOFT_INVENTORY_LIMIT)
+            shrink = min(1.0, max(0.0, shrink))
+            bid_qty = QUOTE_SIZE
+            ask_qty = max(MIN_QUOTE_SIZE, int(round(QUOTE_SIZE * (1.0 - shrink))))
+        else:
+            bid_qty = QUOTE_SIZE
+            ask_qty = QUOTE_SIZE
+        return min(bid_qty, bid_room), min(ask_qty, ask_room)
 
     def _fit_smile(self, state: TradingState, u_mid: float, T: float):
         """Fit IV ~ a*m**2 + b*m + c on FIT_STRIKES. Returns (a,b,c) or None."""
