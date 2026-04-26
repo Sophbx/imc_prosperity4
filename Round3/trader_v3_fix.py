@@ -45,6 +45,34 @@ class Trader:
         "VEV_5500",
     }
 
+    # Deep ITM vouchers: delta=1, wide spread, treat as separate delta-1 MM.
+    # Per voucher_research, VEV_4000 contributes ~$8.6k/3d when MM'd correctly;
+    # VEV_4500 has zero bot flow so we set a strict spread filter (no-op safety).
+    ITM_VOUCHER_PRODUCTS = {"VEV_4000", "VEV_4500"}
+
+    ITM_VOUCHER_CONFIG = {
+        4000: {
+            # Filter the ~1.8% of "flicker" ticks where spread briefly tightens
+            # to 7-12 (1-2 tick events with adverse selection but no bot flow).
+            # Normal regime is spread 20-22.
+            "min_quote_spread": 12,
+            "improve_ticks": 1,
+            "quote_size": 10,
+            "hard_inventory_limit": 200,
+            "take_distance": 4,
+        },
+        4500: {
+            # 16-tick spread, ~1 bot trade per 3 days. This config yields 0
+            # fills in backtest (vs combined v1's -$33 from a flicker fill).
+            # Strict spread filter is a no-op safety net.
+            "min_quote_spread": 14,
+            "improve_ticks": 1,
+            "quote_size": 10,
+            "hard_inventory_limit": 200,
+            "take_distance": 4,
+        },
+    }
+
     # Round 3 final simulation starts at TTE = 5 days.
     # We now decay TTE dynamically through the day.
     START_T_DAYS = 5.0
@@ -499,6 +527,95 @@ class Trader:
 
         return orders, fair
 
+    def trade_voucher_itm(
+        self,
+        state: TradingState,
+        product: str,
+        strike: int,
+    ) -> List[Order]:
+        """Specialized passive MM for deep-ITM vouchers (VEV_4000, VEV_4500).
+
+        Replaces trade_voucher_baseline for these strikes. Key differences:
+          - Uses min_quote_spread filter to skip "flicker" ticks (spread<12/14)
+            that have adverse selection but no genuine bot flow.
+          - Quotes anchored to best_bid+1 / best_ask-1 (not BS theo, which is
+            unstable for near-intrinsic deep ITM).
+          - No fair-value-based take logic; just simple inside-the-touch making.
+        """
+        depth = state.order_depths.get(product)
+        if depth is None:
+            return []
+        cfg = self.ITM_VOUCHER_CONFIG[strike]
+
+        bb, ba = self.best_bid_ask(depth)
+        if bb is None or ba is None:
+            return []
+
+        spread = ba - bb
+        touch_mid = (bb + ba) / 2.0
+        position = state.position.get(product, 0)
+        limit = self.POSITION_LIMITS[product]
+
+        # Hard inventory safety net (rarely binds in normal operation).
+        if position > cfg["hard_inventory_limit"]:
+            return self._itm_cross_to_neutralize(product, depth, position, touch_mid, cfg, "sell")
+        if position < -cfg["hard_inventory_limit"]:
+            return self._itm_cross_to_neutralize(product, depth, position, touch_mid, cfg, "buy")
+
+        # Skip if spread too tight (flicker filter).
+        if spread < cfg["min_quote_spread"]:
+            return []
+
+        # Quote inside the touch.
+        bid_price = bb + cfg["improve_ticks"]
+        ask_price = ba - cfg["improve_ticks"]
+        if bid_price >= ba:
+            bid_price = ba - 1
+        if ask_price <= bb:
+            ask_price = bb + 1
+
+        bid_qty = self.clamp_buy(position, limit, cfg["quote_size"])
+        ask_qty = self.clamp_sell(position, limit, cfg["quote_size"])
+
+        orders: List[Order] = []
+        if bid_qty > 0:
+            orders.append(Order(product, int(bid_price), int(bid_qty)))
+        if ask_qty > 0:
+            orders.append(Order(product, int(ask_price), -int(ask_qty)))
+        return orders
+
+    def _itm_cross_to_neutralize(self, product, depth, position, touch_mid, cfg, side):
+        """Emergency cross-spread liquidation if hard limit breached on ITM voucher."""
+        target_qty = abs(position) - cfg["hard_inventory_limit"] // 2
+        if target_qty <= 0:
+            return []
+        orders: List[Order] = []
+        if side == "sell":
+            for price in sorted(depth.buy_orders.keys(), reverse=True):
+                if price < touch_mid - cfg["take_distance"]:
+                    break
+                avail = int(depth.buy_orders[price])
+                qty = min(target_qty, max(0, avail))
+                if qty <= 0:
+                    continue
+                orders.append(Order(product, int(price), -int(qty)))
+                target_qty -= qty
+                if target_qty <= 0:
+                    break
+        else:
+            for price in sorted(depth.sell_orders.keys()):
+                if price > touch_mid + cfg["take_distance"]:
+                    break
+                avail = abs(int(depth.sell_orders[price]))
+                qty = min(target_qty, max(0, avail))
+                if qty <= 0:
+                    continue
+                orders.append(Order(product, int(price), int(qty)))
+                target_qty -= qty
+                if target_qty <= 0:
+                    break
+        return orders
+
     def trade_voucher_baseline(
         self,
         state: TradingState,
@@ -892,7 +1009,16 @@ class Trader:
                         strike=strike,
                         s_fair=s_fair,
                     )
+                elif product in self.ITM_VOUCHER_PRODUCTS:
+                    # Specialized passive MM for deep-ITM vouchers (4000, 4500).
+                    voucher_orders = self.trade_voucher_itm(
+                        state=state,
+                        product=product,
+                        strike=strike,
+                    )
                 else:
+                    # VEV_6000, VEV_6500 still go through the BS-based baseline
+                    # (effectively no-ops since these strikes are dead).
                     voucher_orders = self.trade_voucher_baseline(
                         state=state,
                         product=product,
