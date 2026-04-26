@@ -277,8 +277,13 @@ class Trader:
         elif short < wall < long and trend < 0:
             fair += 3
 
-        fair -= 0.25 * position
-        
+        fair -= 0.35 * position
+
+        if position > 120:
+            fair -= 0.8 * (position - 120)
+        elif position < -120:
+            fair -= 0.8 * (position + 120)
+
         # 如果 best bid 明显高于双均线，主动卖给它
         if best_bid > short and best_bid > long:
             sell_qty = self.clamp_sell(position, limit, min(30, depth.buy_orders[best_bid]))
