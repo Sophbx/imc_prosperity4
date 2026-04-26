@@ -141,27 +141,69 @@ class Trader:
     def run(self, state: TradingState):
         result: dict[str, list[Order]] = {}
 
-        # Underlying mid
         u_depth = state.order_depths.get(UNDERLYING)
         if u_depth is None or not u_depth.buy_orders or not u_depth.sell_orders:
             return result, 0, ""
         u_mid = (max(u_depth.buy_orders) + min(u_depth.sell_orders)) / 2.0
 
-        T = tte_years(state.timestamp // TIMESTAMPS_PER_DAY, state.timestamp % TIMESTAMPS_PER_DAY)
+        day = state.timestamp // TIMESTAMPS_PER_DAY
+        ts_in_day = state.timestamp % TIMESTAMPS_PER_DAY
+        T = tte_years(day, ts_in_day)
         if T <= 0:
             return result, 0, ""
 
-        # Smile fit
         smile = self._fit_smile(state, u_mid, T)
-        if smile is None:
-            return result, 0, ""
 
-        # Diagnostic only this task: print fit coefs once per ~10k ticks.
-        if state.timestamp % 100_000 == 0:
-            a, b, c = smile
-            print(f"ts={state.timestamp} u_mid={u_mid:.2f} T={T:.5f} smile=(a={a:.4f}, b={b:.4f}, c={c:.4f})")
+        for K in TRADED_STRIKES:
+            symbol = f"VEV_{K}"
+            depth = state.order_depths.get(symbol)
+            if depth is None:
+                continue
+            best_bid, best_ask = self._best_prices(depth)
+            if best_bid is None or best_ask is None:
+                continue
+
+            position = int(state.position.get(symbol, 0))
+            orders = self._quote_voucher(symbol, K, depth, position, u_mid, T, smile, ts_in_day)
+            if orders:
+                result[symbol] = orders
 
         return result, 0, ""
+
+    def _quote_voucher(self, symbol, K, depth, position, u_mid, T, smile, ts_in_day):
+        best_bid, best_ask = self._best_prices(depth)
+        bid_room = max(0, MAX_POSITION - position)
+        ask_room = max(0, MAX_POSITION + position)
+
+        # Base quotes: improve over touch by 1.
+        buy_price = best_bid + 1
+        sell_price = best_ask - 1
+
+        # Smile clamp.
+        if smile is not None:
+            a, b, c = smile
+            m = u_mid / K
+            fair_iv = a * m * m + b * m + c
+            if fair_iv > 0:
+                fair_px = bs_call_price(u_mid, K, T, fair_iv)
+                buy_price = min(buy_price, int(fair_px))
+                sell_price = max(sell_price, int(round(fair_px + 0.5)))
+
+        # Don't cross the book passively.
+        if buy_price >= best_ask:
+            buy_price = best_ask - 1
+        if sell_price <= best_bid:
+            sell_price = best_bid + 1
+
+        bid_qty = min(QUOTE_SIZE, bid_room)
+        ask_qty = min(QUOTE_SIZE, ask_room)
+
+        orders = []
+        if bid_qty > 0:
+            orders.append(Order(symbol, int(buy_price), int(bid_qty)))
+        if ask_qty > 0:
+            orders.append(Order(symbol, int(sell_price), -int(ask_qty)))
+        return orders
 
     def _fit_smile(self, state: TradingState, u_mid: float, T: float):
         """Fit IV ~ a*m**2 + b*m + c on FIT_STRIKES. Returns (a,b,c) or None."""
