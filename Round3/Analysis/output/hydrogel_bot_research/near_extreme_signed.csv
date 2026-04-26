@@ -1,0 +1,5 @@
+product,bucket,w,delta,n,n_below_mid,n_above_mid,n_at_mid,frac_below_mid,frac_above_mid,mean_price_minus_mid
+HYDROGEL_PACK,near_min,500,1,76,76,0,0,1.0,0.0,-7.907894736842105
+HYDROGEL_PACK,near_max,500,1,97,0,97,0,0.0,1.0,7.902061855670103
+VELVETFRUIT_EXTRACT,near_min,500,1,93,72,21,0,0.7741935483870968,0.22580645161290322,-1.7419354838709677
+VELVETFRUIT_EXTRACT,near_max,500,1,88,0,88,0,0.0,1.0,2.460227272727273
