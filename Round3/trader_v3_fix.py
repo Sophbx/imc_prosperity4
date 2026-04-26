@@ -108,7 +108,7 @@ class Trader:
     # Higher residual_weight means more option-specific fair-value residual driven.
     IMPROVED_OPTION_CONFIG = {
         5000: {
-            "velvet_weight": 0.80,
+            "velvet_weight": 0.0,
             "residual_weight": 0.20,
             "entry_z": 1.0,
             "strong_z": 1.8,
@@ -119,7 +119,7 @@ class Trader:
             "resid_edge_mult": 0.10,
         },
         5100: {
-            "velvet_weight": 0.60,
+            "velvet_weight": 0.0,
             "residual_weight": 0.40,
             "entry_z": 1.0,
             "strong_z": 1.8,
@@ -130,7 +130,7 @@ class Trader:
             "resid_edge_mult": 0.10,
         },
         5200: {
-            "velvet_weight": 0.40,
+            "velvet_weight": 0.0,
             "residual_weight": 0.60,
             "entry_z": 1.0,
             "strong_z": 1.8,
@@ -141,7 +141,7 @@ class Trader:
             "resid_edge_mult": 0.12,
         },
         5300: {
-            "velvet_weight": 0.25,
+            "velvet_weight": 0.0,
             "residual_weight": 0.75,
             "entry_z": 1.0,
             "strong_z": 1.8,
@@ -152,7 +152,7 @@ class Trader:
             "resid_edge_mult": 0.15,
         },
         5400: {
-            "velvet_weight": 0.10,
+            "velvet_weight": 0.0,
             "residual_weight": 0.90,
             "entry_z": 1.1,
             "strong_z": 2.0,
