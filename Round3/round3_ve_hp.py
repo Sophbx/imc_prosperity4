@@ -91,126 +91,349 @@ class Trader:
             return self.SIZE_1
         return 0
 
-    def _target(self, mid: float, timestamp: int, data: Dict) -> int:
-        mode = data.get("mode", "flat")
-        extreme = data.get("extreme")
-        cooldown_until = int(data.get("cooldown_until", -1))
-        needs_reset = bool(data.get("needs_reset", False))
+    def get_wall_mid(self, depth: OrderDepth) -> Optional[float]:
+        if not depth.buy_orders or not depth.sell_orders:
+            return self.get_mid(depth)
 
-        z = self._z(mid)
+        bid_wall_price = max(depth.buy_orders.items(), key=lambda x: abs(x[1]))[0]
+        ask_wall_price = min(depth.sell_orders.items(), key=lambda x: -abs(x[1]))[0]
 
-        reversal = self.REVERSAL_Z * self.SIGMA
-        rebound = self.REBOUND_Z * self.SIGMA
+        return (bid_wall_price + ask_wall_price) / 2.0
 
-        reset_band = self.RESET_Z * self.SIGMA
-        reset_low = self.FAIR - reset_band
-        reset_high = self.FAIR + reset_band
+    def update_ema(self, mem: Dict, key: str, x: float, alpha: float) -> float:
+        ema_map = mem["ema"]
+        prev = ema_map.get(key)
+        if prev is None:
+            ema = x
+        else:
+            ema = alpha * x + (1.0 - alpha) * prev
+        ema_map[key] = ema
+        return ema
 
-        if mode == "flat":
-            data["extreme"] = None
-            data["short_size"] = 0
+    @staticmethod
+    def norm_cdf(x: float) -> float:
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
-            if needs_reset:
-                if reset_low <= mid <= reset_high:
-                    data["needs_reset"] = False
-                    needs_reset = False
-                else:
-                    return 0
+    def bs_call(self, s: float, k: float, sigma: float, t_days: float) -> float:
+        if s <= 0 or k <= 0:
+            return 0.0
 
-            if timestamp < cooldown_until:
-                return 0
+        if t_days <= 1e-9 or sigma <= 1e-9:
+            return max(s - k, 0.0)
 
-            short_size = self._desired_short_size_from_z(z)
+        total_vol = sigma * math.sqrt(t_days)
+        if total_vol <= 1e-12:
+            return max(s - k, 0.0)
 
-            if short_size > 0:
-                data["mode"] = "short"
-                data["extreme"] = mid
-                data["short_size"] = short_size
-                return -short_size
+        d1 = (math.log(s / k) + 0.5 * total_vol * total_vol) / total_vol
+        d2 = d1 - total_vol
+        return s * self.norm_cdf(d1) - k * self.norm_cdf(d2)
 
-            return 0
+    def fair_from_wall_and_ema(
+        self,
+        mem: Dict,
+        product: str,
+        depth: OrderDepth,
+        alpha: float,
+        wall_weight: float,
+    ) -> Optional[float]:
+        mid = self.get_mid(depth)
+        wall = self.get_wall_mid(depth)
 
-        if mode == "short":
-            high = max(float(extreme or mid), mid)
-            data["extreme"] = high
+        if mid is None and wall is None:
+            return None
+        if wall is None:
+            wall = mid
+        if mid is None:
+            mid = wall
 
-            old_short_size = int(data.get("short_size", self.SIZE_1))
-            desired_short_size = self._desired_short_size_from_z(z)
+        ema = self.update_ema(mem, product, wall, alpha)
+        fair = wall_weight * wall + (1.0 - wall_weight) * ema
+        return fair
 
-            # Important: only scale IN, never scale OUT while short.
-            # If z falls, keep the existing short until reversal.
-            short_size = max(old_short_size, desired_short_size)
+    def clamp_buy(self, position: int, limit: int, desired: int) -> int:
+        return max(0, min(desired, limit - position))
 
-            # Safety fallback.
-            if short_size <= 0:
-                short_size = self.SIZE_1
+    def clamp_sell(self, position: int, limit: int, desired: int) -> int:
+        return max(0, min(desired, limit + position))
 
-            short_size = min(short_size, self.LIMIT)
-            data["short_size"] = short_size
+    def take_crossed_quotes(
+        self,
+        product: str,
+        depth: OrderDepth,
+        fair: float,
+        take_edge: float,
+        position: int,
+        limit: int,
+    ) -> List[Order]:
+        orders: List[Order] = []
+        pos = position
 
-            if mid <= high - reversal:
-                data["mode"] = "long"
-                data["extreme"] = mid
-                data["short_size"] = 0
-                return self.LIMIT
+        for ask in sorted(depth.sell_orders.keys()):
+            ask_qty = -depth.sell_orders[ask]
+            if ask <= fair - take_edge:
+                qty = self.clamp_buy(pos, limit, ask_qty)
+                if qty > 0:
+                    orders.append(Order(product, ask, qty))
+                    pos += qty
 
-            return -short_size
+        for bid in sorted(depth.buy_orders.keys(), reverse=True):
+            bid_qty = depth.buy_orders[bid]
+            if bid >= fair + take_edge:
+                qty = self.clamp_sell(pos, limit, bid_qty)
+                if qty > 0:
+                    orders.append(Order(product, bid, -qty))
+                    pos -= qty
 
-        if mode == "long":
-            low = min(float(extreme or mid), mid)
-            data["extreme"] = low
+        return orders
 
-            if mid >= low + rebound:
-                data["mode"] = "flat"
-                data["extreme"] = None
-                data["cooldown_until"] = timestamp + self.COOLDOWN_TIME
-                data["needs_reset"] = True
-                data["short_size"] = 0
-                return 0
+    def update_stat(self, mem, product, x):
+        hist_map = mem.setdefault("hist", {})
+        hist = hist_map.setdefault(product, [])
 
-            return self.LIMIT
+        hist.append(x)
+        if len(hist) > 100:
+            hist.pop(0)
 
-        data["mode"] = "flat"
-        data["extreme"] = None
-        data["needs_reset"] = False
-        data["short_size"] = 0
-        return 0
+        mean = sum(hist) / len(hist)
+        var = sum((v - mean) ** 2 for v in hist) / max(1, len(hist) - 1)
+        std = math.sqrt(max(var, 1e-6))
 
-    def run(self, state: TradingState):
-        data = self._load(state.traderData)
+        return mean, std
 
-        result: Dict[str, List[Order]] = {product: [] for product in state.order_depths}
+    def make_quotes(
+        self,
+        product: str,
+        depth: OrderDepth,
+        fair: float,
+        position: int,
+        limit: int,
+        edge: int,
+        size: int,
+        inv_skew: float,
+    ) -> List[Order]:
+        orders: List[Order] = []
+        best_bid, best_ask = self.best_bid_ask(depth)
 
-        od = state.order_depths.get(SYM)
-        if od is None:
-            return result, 0, self._save(data)
+        if best_bid is None or best_ask is None:
+            return orders
 
-        bb, ba = self._bb_ba(od)
-        if bb is None or ba is None:
-            return result, 0, self._save(data)
+        fair_adj = fair - inv_skew * position
 
-        mid = (bb + ba) / 2.0
-        pos = int(state.position.get(SYM, 0))
-        target = self._target(mid, int(state.timestamp), data)
+        buy_px = int(math.floor(fair_adj - edge))
+        sell_px = int(math.ceil(fair_adj + edge))
 
-        buy_cap = max(0, self.LIMIT - pos)
-        sell_cap = max(0, self.LIMIT + pos)
+        buy_px = min(buy_px, best_bid + 1)
+        sell_px = max(sell_px, best_ask - 1)
+
+        if buy_px < best_ask:
+            buy_qty = self.clamp_buy(position, limit, size)
+            if buy_qty > 0:
+                orders.append(Order(product, buy_px, buy_qty))
+
+        if sell_px > best_bid:
+            sell_qty = self.clamp_sell(position, limit, size)
+            if sell_qty > 0:
+                orders.append(Order(product, sell_px, -sell_qty))
+
+        return orders
+
+    def trade_hydrogel(self, state: TradingState, mem: Dict) -> List[Order]:
+
+        product = "HYDROGEL_PACK"
+        depth = state.order_depths.get(product)
+        if depth is None:
+            return []
+
+        wall = self.get_wall_mid(depth)
+        if wall is None:
+            return []
+
+        short = self.update_ema(mem, product + "_short", wall, 0.12)
+        long = self.update_ema(mem, product + "_long", wall, 0.02)
+        mean, std = self.update_stat(mem, product, wall)
+        z = (wall - mean) / std
+
+        trend = short - long
+        trend_strength = abs(trend)
+        TREND_THRESHOLD = 2.0
+
+        position = state.position.get(product, 0)
+        limit = self.POSITION_LIMITS[product]
+        best_bid, best_ask = self.best_bid_ask(depth)
+        if best_bid is None or best_ask is None:
+            return []
+
+        fair = 0.50 * wall + 0.30 * short + 0.20 * long
+
+        if z > 1.2:
+            fair -= 4
+        elif z < -1.2:
+            fair += 4
+
+        if long < wall < short and trend > 0:
+            fair -= 3
+        elif short < wall < long and trend < 0:
+            fair += 3
+
+        fair -= 0.25 * position
+
+        if position > 120:
+            fair -= 0.8 * (position - 120)
+        elif position < -120:
+            fair -= 0.8 * (position + 120)
+
+            if best_ask <= fair - 2 and position < 120:
+                buy_qty = self.clamp_buy(position, limit, min(30, -depth.sell_orders[best_ask]))
+                if buy_qty > 0:
+                    orders.append(Order(product, best_ask, buy_qty))
+                    position += buy_qty
+
+        else:
+            if allow_buy and best_ask <= fair - 1 and position < 120:
+                buy_qty = self.clamp_buy(position, limit, min(25, -depth.sell_orders[best_ask]))
+                if buy_qty > 0:
+                    orders.append(Order(product, best_ask, buy_qty))
+                    position += buy_qty
+
+            if allow_sell and best_bid >= fair + 1 and position > -120:
+                sell_qty = self.clamp_sell(position, limit, min(25, depth.buy_orders[best_bid]))
+                if sell_qty > 0:
+                    orders.append(Order(product, best_bid, -sell_qty))
+                    position -= sell_qty
+
+        edge = max(6, (best_ask - best_bid) // 2 - 1)
+        buy_px = min(best_bid + 1, int(math.floor(fair - edge)))
+        sell_px = max(best_ask - 1, int(math.ceil(fair + edge)))
+
+            if buy_qty > 0:
+                orders.append(Order(product, buy_px, buy_qty))
+
+        if allow_sell and sell_px > best_bid and position > -120:
+            sell_qty = self.clamp_sell(position, limit, 25)
+            if sell_qty > 0:
+                orders.append(Order(product, sell_px, -sell_qty))
+
+        return orders
+
+    def trade_voucher(
+        self,
+        state: TradingState,
+        product: str,
+        strike: int,
+        s_fair: float,
+    ) -> List[Order]:
+        depth = state.order_depths.get(product)
+        if depth is None:
+            return []
+
+        best_bid, best_ask = self.best_bid_ask(depth)
+        if best_bid is None or best_ask is None:
+            return []
+
+        sigma = self.BASE_SIGMA * self.SMILE_RATIO[strike]
+        theo = self.bs_call(s_fair, float(strike), sigma, self.T_DAYS)
+
+        position = state.position.get(product, 0)
+        limit = self.POSITION_LIMITS[product]
+        spread = best_ask - best_bid
+
+        # inventory-adjusted fair
+        fair = theo - 0.10 * position
+
+        # tighter / safer handling for dead far OTM options
+        if strike >= 6000:
+            take_edge = 1.5
+            quote_edge = 1
+            quote_size = 8
+        elif strike <= 4500:
+            take_edge = 2.0
+            quote_edge = max(1, spread // 2)
+            quote_size = 10
+        else:
+            take_edge = 1.0
+            quote_edge = max(1, spread // 2)
+            quote_size = 15
 
         orders: List[Order] = []
+        pos = position
 
-        if target > pos and buy_cap > 0:
-            visible = max(0, -od.sell_orders.get(ba, 0))
-            qty = min(target - pos, buy_cap, self.MAX_TRADE, visible)
+        # Aggressive take
+        for ask in sorted(depth.sell_orders.keys()):
+            ask_qty = -depth.sell_orders[ask]
+            if ask <= fair - take_edge:
+                qty = self.clamp_buy(pos, limit, ask_qty)
+                if qty > 0:
+                    orders.append(Order(product, ask, qty))
+                    pos += qty
 
-            if qty > 0:
-                orders.append(Order(SYM, ba, qty))
+        for bid in sorted(depth.buy_orders.keys(), reverse=True):
+            bid_qty = depth.buy_orders[bid]
+            if bid >= fair + take_edge:
+                qty = self.clamp_sell(pos, limit, bid_qty)
+                if qty > 0:
+                    orders.append(Order(product, bid, -qty))
+                    pos -= qty
 
-        elif target < pos and sell_cap > 0:
-            visible = max(0, od.buy_orders.get(bb, 0))
-            qty = min(pos - target, sell_cap, self.MAX_TRADE, visible)
+        # Passive make
+        fair_adj = fair - 0.12 * pos
+        buy_px = int(math.floor(fair_adj - quote_edge))
+        sell_px = int(math.ceil(fair_adj + quote_edge))
 
-            if qty > 0:
-                orders.append(Order(SYM, bb, -qty))
+        buy_px = min(buy_px, best_bid + 1)
+        sell_px = max(sell_px, best_ask - 1)
 
-        result[SYM] = orders
-        return result, 0, self._save(data)
+        if buy_px < best_ask:
+            buy_qty = self.clamp_buy(pos, limit, quote_size)
+            if buy_qty > 0:
+                orders.append(Order(product, buy_px, buy_qty))
+
+        if sell_px > best_bid:
+            sell_qty = self.clamp_sell(pos, limit, quote_size)
+            if sell_qty > 0:
+                orders.append(Order(product, sell_px, -sell_qty))
+
+        return orders
+
+    def trade_extract(self, state: TradingState, mem: Dict):
+        product = "VELVETFRUIT_EXTRACT"
+        depth = state.order_depths.get(product)
+        if depth is None:
+            return [], None
+
+        fair = self.fair_from_wall_and_ema(mem, product, depth, self.EXTRACT_ALPHA, 0.70)
+        if fair is None:
+            return [], None
+
+        position = state.position.get(product, 0)
+        limit = self.POSITION_LIMITS[product]
+
+        orders = []
+        orders += self.take_crossed_quotes(product, depth, fair, 1.0, position, limit)
+        pos_after = position + sum(o.quantity for o in orders)
+        orders += self.make_quotes(product, depth, fair, pos_after, limit, 1, 25, 0.08)
+
+        return orders, fair
+
+    def run(self, state: TradingState):
+        mem = self.load_memory(state.traderData)
+
+        result: Dict[str, List[Order]] = {}
+
+        hydro_orders = self.trade_hydrogel(state, mem)
+        if hydro_orders:
+            result["HYDROGEL_PACK"] = hydro_orders
+
+        extract_orders, s_fair = self.trade_extract(state, mem)
+        if extract_orders:
+            result["VELVETFRUIT_EXTRACT"] = extract_orders
+
+        if s_fair is not None:
+            for product, strike in self.VOUCHER_STRIKES.items():
+                voucher_orders = self.trade_voucher(state, product, strike, s_fair)
+                if voucher_orders:
+                    result[product] = voucher_orders
+
+        conversions = 0
+        trader_data = self.save_memory(mem)
+        return result, conversions, trader_data
