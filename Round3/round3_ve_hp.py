@@ -234,6 +234,7 @@ class Trader:
         return orders
 
     def trade_hydrogel(self, state: TradingState, mem: Dict) -> List[Order]:
+
         product = "HYDROGEL_PACK"
         depth = state.order_depths.get(product)
         if depth is None:
@@ -284,15 +285,15 @@ class Trader:
         elif position < -120:
             fair -= 0.8 * (position + 120)
 
-        # 如果 best bid 明显高于双均线，主动卖给它
-        if best_bid > short and best_bid > long:
+        # 如果 best bid 高于双均线，主动卖给它
+        if best_bid >= fair + 2 and position > -120:
             sell_qty = self.clamp_sell(position, limit, min(30, depth.buy_orders[best_bid]))
             if sell_qty > 0:
                 orders.append(Order(product, best_bid, -sell_qty))
                 position -= sell_qty
 
-        # 如果 best ask 明显低于双均线，主动买它
-        if best_ask < short and best_ask < long:
+        # 如果 best ask 低于双均线，主动买它
+        if best_ask <= fair - 2 and position < 120:
             buy_qty = self.clamp_buy(position, limit, min(30, -depth.sell_orders[best_ask]))
             if buy_qty > 0:
                 orders.append(Order(product, best_ask, buy_qty))
@@ -303,7 +304,7 @@ class Trader:
         buy_px = min(best_bid + 1, int(math.floor(fair - edge)))
         sell_px = max(best_ask - 1, int(math.ceil(fair + edge)))
 
-        if buy_px < best_ask:
+        if buy_px < best_ask and position < 120:
             buy_qty = self.clamp_buy(position, limit, 20)
             if buy_qty > 0:
                 orders.append(Order(product, buy_px, buy_qty))
