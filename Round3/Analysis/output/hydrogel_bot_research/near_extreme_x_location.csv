@@ -1,0 +1,6 @@
+product,bucket,trade_location,n
+HYDROGEL_PACK,near_min,at_or_below_bid_touch,76
+HYDROGEL_PACK,near_max,at_or_above_ask_touch,97
+VELVETFRUIT_EXTRACT,near_min,at_or_below_bid_touch,72
+VELVETFRUIT_EXTRACT,near_min,at_or_above_ask_touch,21
+VELVETFRUIT_EXTRACT,near_max,at_or_above_ask_touch,88
