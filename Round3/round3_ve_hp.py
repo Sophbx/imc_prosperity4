@@ -62,9 +62,10 @@ class Trader:
             if not isinstance(mem, dict):
                 return {"ema": {}}
             mem.setdefault("ema", {})
+            mem.setdefault("stats", {})
             return mem
         except Exception:
-            return {"ema": {}}
+            return {"ema": {}, "stats": {}}
 
     def save_memory(self, mem: Dict) -> str:
         try:
@@ -180,6 +181,21 @@ class Trader:
 
         return orders
 
+    def update_stat(self, mem, product, x):
+        stats = mem.setdefault("stats", {})
+        s = stats.setdefault(product, {"n": 0, "mean": x, "m2": 0.0})
+
+        s["n"] += 1
+        n = s["n"]
+        delta = x - s["mean"]
+        s["mean"] += delta / n
+        s["m2"] += delta * (x - s["mean"])
+
+        var = s["m2"] / max(1, n - 1)
+        std = math.sqrt(max(var, 1e-6))
+        return s["mean"], std
+
+
     def make_quotes(
         self,
         product: str,
@@ -223,87 +239,76 @@ class Trader:
         if depth is None:
             return []
 
-        fair = self.fair_from_wall_and_ema(
-            mem=mem,
-            product=product,
-            depth=depth,
-            alpha=self.HYDRO_ALPHA,
-            wall_weight=0.65,
-        )
-        if fair is None:
+        wall = self.get_wall_mid(depth)
+        if wall is None:
             return []
 
+        short = self.update_ema(mem, product + "_short", wall, 0.12)
+        long = self.update_ema(mem, product + "_long", wall, 0.02)
+        mean, std = self.update_stat(mem, product, wall)
+        z = (wall - mean) / std
+
         position = state.position.get(product, 0)
         limit = self.POSITION_LIMITS[product]
+        best_bid, best_ask = self.best_bid_ask(depth)
+        if best_bid is None or best_ask is None:
+            return []
 
-        orders: List[Order] = []
-        orders += self.take_crossed_quotes(
-            product=product,
-            depth=depth,
-            fair=fair,
-            take_edge=5.0,
-            position=position,
-            limit=limit,
-        )
+        fair = 0.50 * wall + 0.30 * short + 0.20 * long
 
-        pos_after = position + sum(o.quantity for o in orders)
+        # mean reversion zscore
+        if z > 1.2:
+            fair -= 4
+        elif z < -1.2:
+            fair += 4
 
-        orders += self.make_quotes(
-            product=product,
-            depth=depth,
-            fair=fair,
-            position=pos_after,
-            limit=limit,
-            edge=4,
-            size=20,
-            inv_skew=0.10,
-        )
+        # 双均线趋势判断
+        trend = short - long
+
+        orders = []
+
+        # 价格在短均线下、长均线上，但 short > long：
+        # 说明短线回落但大趋势仍高，预测继续跌一段，所以 ask 更积极，bid 更保守
+        if long < wall < short and trend > 0:
+            fair -= 3
+
+        # 反过来：价格在短均线上、长均线下，short < long：
+        # 说明短线反弹但大趋势仍低，预测继续涨一段，所以 bid 更积极，ask 更保守
+        elif short < wall < long and trend < 0:
+            fair += 3
+
+        fair -= 0.25 * position
+        
+        # 如果 best bid 明显高于双均线，主动卖给它
+        if best_bid > short and best_bid > long:
+            sell_qty = self.clamp_sell(position, limit, min(30, depth.buy_orders[best_bid]))
+            if sell_qty > 0:
+                orders.append(Order(product, best_bid, -sell_qty))
+                position -= sell_qty
+
+        # 如果 best ask 明显低于双均线，主动买它
+        if best_ask < short and best_ask < long:
+            buy_qty = self.clamp_buy(position, limit, min(30, -depth.sell_orders[best_ask]))
+            if buy_qty > 0:
+                orders.append(Order(product, best_ask, buy_qty))
+                position += buy_qty
+
+        # 被动挂单：根据 fair 调整 bid/ask
+        edge = max(6, (best_ask - best_bid)//2 - 1)
+        buy_px = min(best_bid + 1, int(math.floor(fair - edge)))
+        sell_px = max(best_ask - 1, int(math.ceil(fair + edge)))
+
+        if buy_px < best_ask:
+            buy_qty = self.clamp_buy(position, limit, 20)
+            if buy_qty > 0:
+                orders.append(Order(product, buy_px, buy_qty))
+
+        if sell_px > best_bid:
+            sell_qty = self.clamp_sell(position, limit, 20)
+            if sell_qty > 0:
+                orders.append(Order(product, sell_px, -sell_qty))
 
         return orders
-
-    def trade_extract(self, state: TradingState, mem: Dict) -> Tuple[List[Order], Optional[float]]:
-        product = "VELVETFRUIT_EXTRACT"
-        depth = state.order_depths.get(product)
-        if depth is None:
-            return [], None
-
-        fair = self.fair_from_wall_and_ema(
-            mem=mem,
-            product=product,
-            depth=depth,
-            alpha=self.EXTRACT_ALPHA,
-            wall_weight=0.70,
-        )
-        if fair is None:
-            return [], None
-
-        position = state.position.get(product, 0)
-        limit = self.POSITION_LIMITS[product]
-
-        orders: List[Order] = []
-        orders += self.take_crossed_quotes(
-            product=product,
-            depth=depth,
-            fair=fair,
-            take_edge=1.0,
-            position=position,
-            limit=limit,
-        )
-
-        pos_after = position + sum(o.quantity for o in orders)
-
-        orders += self.make_quotes(
-            product=product,
-            depth=depth,
-            fair=fair,
-            position=pos_after,
-            limit=limit,
-            edge=1,
-            size=25,
-            inv_skew=0.08,
-        )
-
-        return orders, fair
 
     def trade_voucher(
         self,
@@ -383,6 +388,26 @@ class Trader:
                 orders.append(Order(product, sell_px, -sell_qty))
 
         return orders
+
+    def trade_extract(self, state: TradingState, mem: Dict):
+        product = "VELVETFRUIT_EXTRACT"
+        depth = state.order_depths.get(product)
+        if depth is None:
+            return [], None
+
+        fair = self.fair_from_wall_and_ema(mem, product, depth, self.EXTRACT_ALPHA, 0.70)
+        if fair is None:
+            return [], None
+
+        position = state.position.get(product, 0)
+        limit = self.POSITION_LIMITS[product]
+
+        orders = []
+        orders += self.take_crossed_quotes(product, depth, fair, 1.0, position, limit)
+        pos_after = position + sum(o.quantity for o in orders)
+        orders += self.make_quotes(product, depth, fair, pos_after, limit, 1, 25, 0.08)
+
+        return orders, fair
 
     def run(self, state: TradingState):
         mem = self.load_memory(state.traderData)
