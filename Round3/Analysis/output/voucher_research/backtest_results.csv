@@ -1,0 +1,10 @@
+version,description,total_pnl,n_trades,strikes,fair_guard,extras
+v1_proto,smile-fair quotes margin=1 floor,57,2,"[5000,5100,5200,5300]",1.0,
+v2,maker improve-by-1 with FAIR_GUARD=0.5,182,15,"[5000,5100,5200,5300]",0.5,
+v3,no smile guard plain MM,0,0,"[5000,5100,5200,5300]",inf,
+v4_baseline,smile guard 0 + improve-by-1,1956,59,"[5000,5100,5200,5300]",0.0,
+v4_5strike,baseline + 5400,2374,105,"[5000,5100,5200,5300,5400]",0.0,
+v4_7strike,baseline + 4500/5400/5500,2398.5,112,"[4500,5000,5100,5200,5300,5400,5500]",0.0,
+v6_taker_thr3,v4 5strike + taker @ |fair-mid|>3,2625.5,158,"[5000,5100,5200,5300,5400]",0.0,with taker thr=3
+v6_taker_thr5,v4 5strike + taker @ |fair-mid|>5,1103,147,"[5000,5100,5200,5300,5400]",0.0,with taker thr=5
+v7_hedged,v4 5strike + delta hedge,-198,108,"[5000,5100,5200,5300,5400]",0.0,with VELVETFRUIT delta hedge
