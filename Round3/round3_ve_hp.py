@@ -56,16 +56,17 @@ class Trader:
 
     def load_memory(self, raw: str) -> Dict:
         if not raw:
-            return {"ema": {}}
+            return {"ema": {}, "stats": {}, "hist": {}}
         try:
             mem = json.loads(raw)
             if not isinstance(mem, dict):
-                return {"ema": {}}
+                return {"ema": {}, "stats": {}, "hist": {}}
             mem.setdefault("ema", {})
             mem.setdefault("stats", {})
+            mem.setdefault("hist", {})
             return mem
         except Exception:
-            return {"ema": {}, "stats": {}}
+            return {"ema": {}, "stats": {}, "hist": {}}
 
     def save_memory(self, mem: Dict) -> str:
         try:
@@ -182,19 +183,18 @@ class Trader:
         return orders
 
     def update_stat(self, mem, product, x):
-        stats = mem.setdefault("stats", {})
-        s = stats.setdefault(product, {"n": 0, "mean": x, "m2": 0.0})
+        hist_map = mem.setdefault("hist", {})
+        hist = hist_map.setdefault(product, [])
 
-        s["n"] += 1
-        n = s["n"]
-        delta = x - s["mean"]
-        s["mean"] += delta / n
-        s["m2"] += delta * (x - s["mean"])
+        hist.append(x)
+        if len(hist) > 100:
+            hist.pop(0)
 
-        var = s["m2"] / max(1, n - 1)
+        mean = sum(hist) / len(hist)
+        var = sum((v - mean) ** 2 for v in hist) / max(1, len(hist) - 1)
         std = math.sqrt(max(var, 1e-6))
-        return s["mean"], std
 
+        return mean, std
 
     def make_quotes(
         self,
@@ -234,7 +234,6 @@ class Trader:
         return orders
 
     def trade_hydrogel(self, state: TradingState, mem: Dict) -> List[Order]:
-
         product = "HYDROGEL_PACK"
         depth = state.order_depths.get(product)
         if depth is None:
@@ -249,6 +248,10 @@ class Trader:
         mean, std = self.update_stat(mem, product, wall)
         z = (wall - mean) / std
 
+        trend = short - long
+        trend_strength = abs(trend)
+        TREND_THRESHOLD = 2.0
+
         position = state.position.get(product, 0)
         limit = self.POSITION_LIMITS[product]
         best_bid, best_ask = self.best_bid_ask(depth)
@@ -257,60 +260,71 @@ class Trader:
 
         fair = 0.50 * wall + 0.30 * short + 0.20 * long
 
-        # mean reversion zscore
         if z > 1.2:
             fair -= 4
         elif z < -1.2:
             fair += 4
 
-        # 双均线趋势判断
-        trend = short - long
-
-        orders = []
-
-        # 价格在短均线下、长均线上，但 short > long：
-        # 说明短线回落但大趋势仍高，预测继续跌一段，所以 ask 更积极，bid 更保守
         if long < wall < short and trend > 0:
             fair -= 3
-
-        # 反过来：价格在短均线上、长均线下，short < long：
-        # 说明短线反弹但大趋势仍低，预测继续涨一段，所以 bid 更积极，ask 更保守
         elif short < wall < long and trend < 0:
             fair += 3
 
-        fair -= 0.35 * position
+        fair -= 0.25 * position
 
         if position > 120:
             fair -= 0.8 * (position - 120)
         elif position < -120:
             fair -= 0.8 * (position + 120)
 
-        # 如果 best bid 高于双均线，主动卖给它
-        if best_bid >= fair + 2 and position > -120:
-            sell_qty = self.clamp_sell(position, limit, min(30, depth.buy_orders[best_bid]))
-            if sell_qty > 0:
-                orders.append(Order(product, best_bid, -sell_qty))
-                position -= sell_qty
+        orders: List[Order] = []
 
-        # 如果 best ask 低于双均线，主动买它
-        if best_ask <= fair - 2 and position < 120:
-            buy_qty = self.clamp_buy(position, limit, min(30, -depth.sell_orders[best_ask]))
-            if buy_qty > 0:
-                orders.append(Order(product, best_ask, buy_qty))
-                position += buy_qty
+        allow_buy = True
+        allow_sell = True
 
-        # 被动挂单：根据 fair 调整 bid/ask
-        edge = max(6, (best_ask - best_bid)//2 - 1)
+        if trend_strength >= TREND_THRESHOLD:
+            if trend > 0:
+                allow_sell = False
+            else:
+                allow_buy = False
+
+        if trend_strength < TREND_THRESHOLD:
+            if best_bid >= fair + 2 and position > -120:
+                sell_qty = self.clamp_sell(position, limit, min(30, depth.buy_orders[best_bid]))
+                if sell_qty > 0:
+                    orders.append(Order(product, best_bid, -sell_qty))
+                    position -= sell_qty
+
+            if best_ask <= fair - 2 and position < 120:
+                buy_qty = self.clamp_buy(position, limit, min(30, -depth.sell_orders[best_ask]))
+                if buy_qty > 0:
+                    orders.append(Order(product, best_ask, buy_qty))
+                    position += buy_qty
+
+        else:
+            if allow_buy and best_ask <= fair - 1 and position < 120:
+                buy_qty = self.clamp_buy(position, limit, min(25, -depth.sell_orders[best_ask]))
+                if buy_qty > 0:
+                    orders.append(Order(product, best_ask, buy_qty))
+                    position += buy_qty
+
+            if allow_sell and best_bid >= fair + 1 and position > -120:
+                sell_qty = self.clamp_sell(position, limit, min(25, depth.buy_orders[best_bid]))
+                if sell_qty > 0:
+                    orders.append(Order(product, best_bid, -sell_qty))
+                    position -= sell_qty
+
+        edge = max(6, (best_ask - best_bid) // 2 - 1)
         buy_px = min(best_bid + 1, int(math.floor(fair - edge)))
         sell_px = max(best_ask - 1, int(math.ceil(fair + edge)))
 
-        if buy_px < best_ask and position < 120:
-            buy_qty = self.clamp_buy(position, limit, 20)
+        if allow_buy and buy_px < best_ask and position < 120:
+            buy_qty = self.clamp_buy(position, limit, 25)
             if buy_qty > 0:
                 orders.append(Order(product, buy_px, buy_qty))
 
-        if sell_px > best_bid:
-            sell_qty = self.clamp_sell(position, limit, 20)
+        if allow_sell and sell_px > best_bid and position > -120:
+            sell_qty = self.clamp_sell(position, limit, 25)
             if sell_qty > 0:
                 orders.append(Order(product, sell_px, -sell_qty))
 
