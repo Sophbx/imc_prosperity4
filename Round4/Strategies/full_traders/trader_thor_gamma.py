@@ -1,5 +1,42 @@
 """
-trader_meanrev_v1.py — Aquaman with HG replaced by clean continuous mean reversion.
+trader_thor_gamma.py — Thor + gamma scalping VEV_5300/5400 with VE delta hedge.
+
+Replaces VEV_5300/5400 swing (which made $10K/3d combined) with continuous
+gamma scalping: hold long 300, dynamically hedge delta via VE.
+
+Disables VE swing since VE is now used for hedging.
+
+If gamma scalp gross > VE swing loss + theta cost, this wins.
+Theory says ~$6-8K/day from scalping, similar to VE swing's $7K/day.
+
+trader_thor.py — HG = continuous mean reversion + adaptive crossing.
+
+⭐ NEW BEST STRATEGY: $180,438 / 3 days = $60,146/day on Kevin backtester ⭐
+
+Per-day:
+  Day 1: $58,332  (HG $44,922)
+  Day 2: $53,794  (HG $30,490)
+  Day 3: $68,312  (HG $42,893)
+
+vs Aquaman ($128,600): +$51,838 (+40%). All gains come from HG ($66K → $118K).
+
+HG mechanism:
+  z = (mid - 10000) / 32
+  target = -KAPPA * z * BASE_SIZE  (clamped to ±200)
+  delta = target - position
+
+  if |delta| > CROSS_THRESH (115):  cross spread to fill ~40 lots
+  else:                              passive quote at bb+1 / ba-1
+
+This avoids Titan's death-by-churn (which crossed every band transition,
+losing -$239K) by ONLY crossing when delta is significantly off — small
+adjustments stay passive.
+
+Settings:
+  HG_FAIR = 10000     KAPPA = 2.0      BASE_SIZE = 100
+  MAX_TARGET = 200    QUOTE_SIZE = 60  CROSS_THRESH = 115
+
+Other products: same as Aquaman (VE swing v1, VEV swings, VEV_4000 v4).
 
 HG Strategy (different from R3 v4 swing state machine):
   - Compute z = (mid - 10000) / 32
@@ -59,7 +96,12 @@ class Trader:
     VE_EXIT_START = 900_000
     VE_EXIT_FORCE = 970_000
 
-    SWING_VEV_STRIKES = [5100, 5200, 5300, 5400]
+    SWING_VEV_STRIKES = [5100, 5200]   # 5300/5400 moved to gamma scalp
+    GAMMA_STRIKES = [5300, 5400]        # gamma scalp these
+    GAMMA_TARGET_LOTS = 300
+    GAMMA_T_DAYS = 4.0                  # TTE
+    GAMMA_IV = 0.19
+    GAMMA_FAIR = 5240                   # estimate of S
     VEV_SWING_QUOTE_SIZE = 80
 
     V4_QUOTE_SIZE = 60
@@ -93,8 +135,9 @@ class Trader:
         hg_orders = self._trade_hg_meanrev(state, mem)
         if hg_orders: result[self.HG_SYM] = hg_orders
 
-        ve_orders = self._trade_ve_swing(state)
-        if ve_orders: result[self.VE_SYM] = ve_orders
+        # ve_orders REPLACED by gamma hedge (no VE swing)
+        ve_hedge_orders = self._trade_ve_gamma_hedge(state)
+        if ve_hedge_orders: result[self.VE_SYM] = ve_hedge_orders
 
         v4_orders = self._trade_vev4000_v4(state, mem)
         if v4_orders: result["VEV_4000"] = v4_orders
@@ -103,6 +146,12 @@ class Trader:
             sym = f"VEV_{strike}"
             orders = self._trade_vev_swing(state, sym)
             if orders: result[sym] = orders
+
+        # Gamma scalp strikes — accumulate to GAMMA_TARGET_LOTS long
+        for strike in self.GAMMA_STRIKES:
+            sym = f"VEV_{strike}"
+            gs_orders = self._trade_vev_gamma_scalp(state, sym, strike)
+            if gs_orders: result[sym] = gs_orders
 
         ve_mid = self._mid(state.order_depths.get(self.VE_SYM))
         if ve_mid is not None:
@@ -136,7 +185,7 @@ class Trader:
             return orders
 
         # If |delta| is very large, cross spread for fast fill
-        CROSS_THRESH = 130
+        CROSS_THRESH = 115
         if delta > CROSS_THRESH:
             avail = -int(depth.sell_orders[ba])
             cross_qty = min(40, delta, avail, self.HG_LIMIT - position)
@@ -297,6 +346,89 @@ class Trader:
         ask_size = min(self.V4_QUOTE_SIZE, ask_room)
         if bid_size > 0: orders.append(Order(sym, bid_px, +bid_size))
         if ask_size > 0: orders.append(Order(sym, ask_px, -ask_size))
+        return orders
+
+    # ==================================================================
+    # Gamma scalping: hold long N, hedge delta with VE
+    # ==================================================================
+    def _bs_delta(self, S, K, T, sigma):
+        d1 = (math.log(S/K) + 0.5*sigma**2*T) / (sigma*math.sqrt(T))
+        return self._norm_cdf(d1)
+
+    def _trade_vev_gamma_scalp(self, state: TradingState, sym: str, strike: int) -> List[Order]:
+        depth = state.order_depths.get(sym)
+        if not self._book_ok(depth): return []
+        bb = max(depth.buy_orders); ba = min(depth.sell_orders)
+        if bb >= ba: return []
+        pos = int(state.position.get(sym, 0))
+
+        target = self.GAMMA_TARGET_LOTS
+        delta = target - pos
+        orders: List[Order] = []
+        if delta > 0:
+            # Accumulate via passive bid + occasional cross
+            if delta > 60:
+                # Cross to fill faster
+                avail = -int(depth.sell_orders[ba])
+                qty = min(40, delta, avail, self.VEV_LIMIT - pos)
+                if qty > 0:
+                    orders.append(Order(sym, ba, +qty))
+                    pos += qty
+                    delta = target - pos
+            if delta > 0:
+                size = min(80, delta, self.VEV_LIMIT - pos)
+                if size > 0:
+                    orders.append(Order(sym, bb + 1, +size))
+        return orders
+
+    def _trade_ve_gamma_hedge(self, state: TradingState) -> List[Order]:
+        depth = state.order_depths.get(self.VE_SYM)
+        if not self._book_ok(depth): return []
+        bb = max(depth.buy_orders); ba = min(depth.sell_orders)
+        if bb >= ba: return []
+        ve_pos = int(state.position.get(self.VE_SYM, 0))
+        ve_mid = (bb + ba) / 2.0
+
+        # Sum delta exposure from gamma scalp positions
+        T = self.GAMMA_T_DAYS / 252
+        total_delta = 0.0
+        for strike in self.GAMMA_STRIKES:
+            sym = f"VEV_{strike}"
+            sym_pos = int(state.position.get(sym, 0))
+            if sym_pos != 0:
+                d = self._bs_delta(ve_mid, strike, T, self.GAMMA_IV)
+                total_delta += sym_pos * d
+
+        target_ve = -int(round(total_delta))
+        target_ve = max(-self.VE_LIMIT, min(self.VE_LIMIT, target_ve))
+
+        delta_ve = target_ve - ve_pos
+        orders: List[Order] = []
+        if abs(delta_ve) < 5:
+            return orders
+
+        if delta_ve > 0:
+            # Need to BUY VE (cover short hedge)
+            # Cross spread for big delta, passive otherwise
+            if delta_ve > 30:
+                avail = -int(depth.sell_orders[ba])
+                qty = min(20, delta_ve, avail, self.VE_LIMIT - ve_pos)
+                if qty > 0:
+                    orders.append(Order(self.VE_SYM, ba, +qty))
+            else:
+                size = min(50, delta_ve, self.VE_LIMIT - ve_pos)
+                if size > 0:
+                    orders.append(Order(self.VE_SYM, bb + 1, +size))
+        else:
+            if abs(delta_ve) > 30:
+                avail = int(depth.buy_orders[bb])
+                qty = min(20, -delta_ve, avail, self.VE_LIMIT + ve_pos)
+                if qty > 0:
+                    orders.append(Order(self.VE_SYM, bb, -qty))
+            else:
+                size = min(50, -delta_ve, self.VE_LIMIT + ve_pos)
+                if size > 0:
+                    orders.append(Order(self.VE_SYM, ba - 1, -size))
         return orders
 
     def _trade_vev_bs(self, state: TradingState, sym: str, strike: int, ve_mid: float) -> List[Order]:
