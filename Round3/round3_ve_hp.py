@@ -415,59 +415,49 @@ class Trader:
         if mid is None:
             mid = wall
 
-    # existing slow fair anchor
-        ema = self.update_ema(mem, product, wall, 0.06)
-
-    # new short-term trend filter
+        ema = self.update_ema(mem, product, wall, 0.05)
         ema_fast, ema_slow = self.update_ema_pair(
             mem,
             "VELVETFRUIT_EXTRACT_fast",
             "VELVETFRUIT_EXTRACT_slow",
-            mid,)
+            mid,
+        )
 
         wall_signal = wall - mid
         trend_signal = ema_fast - ema_slow
 
-    # fair price: keep wall/ema idea, but add more microstructure responsiveness
-        fair = 0.55 * wall + 0.25 * ema + 0.20 * mid + 0.8 * wall_signal
+    # softer fair
+        fair = 0.60 * wall + 0.25 * ema + 0.15 * mid + 0.35 * wall_signal
 
         position = state.position.get(product, 0)
 
-    # internal caps: much smaller than exchange limit
-        SOFT_CAP = 20
-        HARD_CAP = 35
+        SOFT_CAP = 45
+        HARD_CAP = 75
 
         orders: List[Order] = []
         pos = position
 
-    # --------------------------------------------------
-    # 1) inventory reduction first if trend goes against us
-    # --------------------------------------------------
-        if pos > 12 and trend_signal < -0.8:
-            sell_qty = min(pos - 12, depth.buy_orders.get(best_bid, 0))
+    # 1) only reduce inventory if position is already fairly large
+        if pos > 25 and trend_signal < -1.2:
+            sell_qty = min(pos - 20, depth.buy_orders.get(best_bid, 0))
             if sell_qty > 0:
                 orders.append(Order(product, best_bid, -sell_qty))
                 pos -= sell_qty
 
-        if pos < -12 and trend_signal > 0.8:
-            buy_qty = min((-12 - pos), -depth.sell_orders.get(best_ask, 0))
+        if pos < -25 and trend_signal > 1.2:
+            buy_qty = min((-20 - pos), -depth.sell_orders.get(best_ask, 0))
             if buy_qty > 0:
                 orders.append(Order(product, best_ask, buy_qty))
                 pos += buy_qty
 
-    # --------------------------------------------------
-    # 2) aggressive take with inventory-aware thresholds
-    # --------------------------------------------------
-        buy_edge = 1.2 + 0.06 * max(pos, 0)
-        sell_edge = 1.2 + 0.06 * max(-pos, 0)
+    # 2) aggressive taking with softer inventory adjustment
+        buy_edge = 0.7 + 0.012 * max(pos, 0)
+        sell_edge = 0.7 + 0.012 * max(-pos, 0)
 
-    # if trend is down, make buying harder
-        if trend_signal < -0.8:
-            buy_edge += 1.2
-
-    # if trend is up, make selling harder
-        if trend_signal > 0.8:
-            sell_edge += 1.2
+        if trend_signal < -2.0:
+            buy_edge += 0.4
+        if trend_signal > 2.0:
+            sell_edge += 0.4
 
         for ask in sorted(depth.sell_orders.keys()):
             ask_qty = -depth.sell_orders[ask]
@@ -485,17 +475,15 @@ class Trader:
                     orders.append(Order(product, bid, -qty))
                     pos -= qty
 
-    # --------------------------------------------------
-    # 3) passive quoting with stronger skew
-    # --------------------------------------------------
-        inv_skew = 0.28
+    # 3) passive making with milder skew
+        inv_skew = 0.05
         fair_adj = fair - inv_skew * pos
 
-        quote_size = 8
-        if abs(pos) >= 12:
-            quote_size = 5
-        if abs(pos) >= 20:
-            quote_size = 3
+        quote_size = 18
+        if abs(pos) >= 25:
+            quote_size = 12
+        if abs(pos) >= 45:
+            quote_size = 7
 
         buy_px = int(math.floor(fair_adj - 1))
         sell_px = int(math.ceil(fair_adj + 1))
@@ -503,9 +491,6 @@ class Trader:
         buy_px = min(buy_px, best_bid + 1)
         sell_px = max(sell_px, best_ask - 1)
 
-    # --------------------------------------------------
-    # 4) one-sided quoting when inventory is large
-    # --------------------------------------------------
         allow_buy = True
         allow_sell = True
 
@@ -514,9 +499,9 @@ class Trader:
         if pos <= -SOFT_CAP:
             allow_sell = False
 
-        if trend_signal < -1.0 and pos > 0:
+        if trend_signal < -1.6 and pos > 20:
             allow_buy = False
-        if trend_signal > 1.0 and pos < 0:
+        if trend_signal > 1.6 and pos < -20:
             allow_sell = False
 
         if allow_buy and buy_px < best_ask:
