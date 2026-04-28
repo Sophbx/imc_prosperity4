@@ -1,89 +1,95 @@
 from datamodel import Order, OrderDepth, TradingState
 from typing import Dict, List, Optional, Tuple
 import json
-import math
+
+
+SYM = "HYDROGEL_PACK"
 
 
 class Trader:
-    POSITION_LIMITS: Dict[str, int] = {
-        "HYDROGEL_PACK": 200,
-        "VELVETFRUIT_EXTRACT": 200,
-        "VEV_4000": 300,
-        "VEV_4500": 300,
-        "VEV_5000": 300,
-        "VEV_5100": 300,
-        "VEV_5200": 300,
-        "VEV_5300": 300,
-        "VEV_5400": 300,
-        "VEV_5500": 300,
-        "VEV_6000": 300,
-        "VEV_6500": 300,
-    }
+    # Hydrogel asymmetric swing model with z-score entry ramp.
+    #
+    # Core winning structure preserved:
+    #   flat  -> short only when Hydrogel is rich
+    #   short -> long only after a large favorable reversal
+    #   long  -> flat after rebound
+    #
+    # Improvement:
+    #   Instead of entering full -200 immediately at z >= 0.85,
+    #   ramp into the short:
+    #       z >= 0.85 -> -120
+    #       z >= 1.25 -> -160
+    #       z >= 1.65 -> -200
+    #
+    # Important:
+    #   Once short, we only increase size if the price gets richer.
+    #   We do NOT reduce short size just because z falls.
+    #   That avoids the bad dynamic/choppy behavior.
 
-    VOUCHER_STRIKES = {
-        "VEV_4000": 4000,
-        "VEV_4500": 4500,
-        "VEV_5000": 5000,
-        "VEV_5100": 5100,
-        "VEV_5200": 5200,
-        "VEV_5300": 5300,
-        "VEV_5400": 5400,
-        "VEV_5500": 5500,
-        "VEV_6000": 6000,
-        "VEV_6500": 6500,
-    }
+    FAIR = 10000.0
+    SIGMA = 32.0
+    LIMIT = 200
 
-    # Round 3 final simulation starts with TTE = 5 days
-    T_DAYS = 5.0
+    ENTRY_Z_1 = 0.85
+    ENTRY_Z_2 = 1.25
+    ENTRY_Z_3 = 1.65
 
-    # Training-data-based volatility smile, centered around ATM
-    BASE_SIGMA = 0.01315
-    SMILE_RATIO = {
-        4000: 1.00,
-        4500: 1.00,
-        5000: 1.001,
-        5100: 0.993,
-        5200: 1.004,
-        5300: 1.015,
-        5400: 0.952,
-        5500: 1.033,
-        6000: 1.08,
-        6500: 1.12,
-    }
+    SIZE_1 = 120
+    SIZE_2 = 160
+    SIZE_3 = 200
 
-    HYDRO_ALPHA = 0.03
-    EXTRACT_ALPHA = 0.05
+    REVERSAL_Z = 3.35
+    REBOUND_Z = 1.20
 
-    def load_memory(self, raw: str) -> Dict:
-        if not raw:
-            return {"ema": {}}
+    MAX_TRADE = 40
+
+    COOLDOWN_TIME = 1200
+    RESET_Z = 0.35
+
+    def _load(self, td: str) -> Dict:
+        if td:
+            try:
+                data = json.loads(td)
+                if isinstance(data, dict):
+                    data.setdefault("mode", "flat")
+                    data.setdefault("extreme", None)
+                    data.setdefault("cooldown_until", -1)
+                    data.setdefault("needs_reset", False)
+                    data.setdefault("short_size", 0)
+                    return data
+            except Exception:
+                pass
+
+        return {
+            "mode": "flat",
+            "extreme": None,
+            "cooldown_until": -1,
+            "needs_reset": False,
+            "short_size": 0,
+        }
+
+    def _save(self, data: Dict) -> str:
         try:
-            mem = json.loads(raw)
-            if not isinstance(mem, dict):
-                return {"ema": {}}
-            mem.setdefault("ema", {})
-            mem.setdefault("stats", {})
-            return mem
+            return json.dumps(data, separators=(",", ":"))[:50000]
         except Exception:
-            return {"ema": {}, "stats": {}}
+            return ""
 
-    def save_memory(self, mem: Dict) -> str:
-        try:
-            return json.dumps(mem, separators=(",", ":"))
-        except Exception:
-            return '{"ema":{}}'
+    def _bb_ba(self, od: OrderDepth) -> Tuple[Optional[int], Optional[int]]:
+        bb = max(od.buy_orders) if od.buy_orders else None
+        ba = min(od.sell_orders) if od.sell_orders else None
+        return bb, ba
 
-    @staticmethod
-    def best_bid_ask(depth: OrderDepth) -> Tuple[Optional[int], Optional[int]]:
-        best_bid = max(depth.buy_orders.keys()) if depth.buy_orders else None
-        best_ask = min(depth.sell_orders.keys()) if depth.sell_orders else None
-        return best_bid, best_ask
+    def _z(self, mid: float) -> float:
+        return (mid - self.FAIR) / self.SIGMA
 
-    def get_mid(self, depth: OrderDepth) -> Optional[float]:
-        best_bid, best_ask = self.best_bid_ask(depth)
-        if best_bid is None or best_ask is None:
-            return None
-        return (best_bid + best_ask) / 2.0
+    def _desired_short_size_from_z(self, z: float) -> int:
+        if z >= self.ENTRY_Z_3:
+            return self.SIZE_3
+        if z >= self.ENTRY_Z_2:
+            return self.SIZE_2
+        if z >= self.ENTRY_Z_1:
+            return self.SIZE_1
+        return 0
 
     def get_wall_mid(self, depth: OrderDepth) -> Optional[float]:
         if not depth.buy_orders or not depth.sell_orders:
@@ -182,19 +188,18 @@ class Trader:
         return orders
 
     def update_stat(self, mem, product, x):
-        stats = mem.setdefault("stats", {})
-        s = stats.setdefault(product, {"n": 0, "mean": x, "m2": 0.0})
+        hist_map = mem.setdefault("hist", {})
+        hist = hist_map.setdefault(product, [])
 
-        s["n"] += 1
-        n = s["n"]
-        delta = x - s["mean"]
-        s["mean"] += delta / n
-        s["m2"] += delta * (x - s["mean"])
+        hist.append(x)
+        if len(hist) > 100:
+            hist.pop(0)
 
-        var = s["m2"] / max(1, n - 1)
+        mean = sum(hist) / len(hist)
+        var = sum((v - mean) ** 2 for v in hist) / max(1, len(hist) - 1)
         std = math.sqrt(max(var, 1e-6))
-        return s["mean"], std
 
+        return mean, std
 
     def make_quotes(
         self,
@@ -249,6 +254,10 @@ class Trader:
         mean, std = self.update_stat(mem, product, wall)
         z = (wall - mean) / std
 
+        trend = short - long
+        trend_strength = abs(trend)
+        TREND_THRESHOLD = 2.0
+
         position = state.position.get(product, 0)
         limit = self.POSITION_LIMITS[product]
         best_bid, best_ask = self.best_bid_ask(depth)
@@ -257,60 +266,51 @@ class Trader:
 
         fair = 0.50 * wall + 0.30 * short + 0.20 * long
 
-        # mean reversion zscore
         if z > 1.2:
             fair -= 4
         elif z < -1.2:
             fair += 4
 
-        # 双均线趋势判断
-        trend = short - long
-
-        orders = []
-
-        # 价格在短均线下、长均线上，但 short > long：
-        # 说明短线回落但大趋势仍高，预测继续跌一段，所以 ask 更积极，bid 更保守
         if long < wall < short and trend > 0:
             fair -= 3
-
-        # 反过来：价格在短均线上、长均线下，short < long：
-        # 说明短线反弹但大趋势仍低，预测继续涨一段，所以 bid 更积极，ask 更保守
         elif short < wall < long and trend < 0:
             fair += 3
 
-        fair -= 0.35 * position
+        fair -= 0.25 * position
 
         if position > 120:
             fair -= 0.8 * (position - 120)
         elif position < -120:
             fair -= 0.8 * (position + 120)
 
-        # 如果 best bid 高于双均线，主动卖给它
-        if best_bid >= fair + 2 and position > -120:
-            sell_qty = self.clamp_sell(position, limit, min(30, depth.buy_orders[best_bid]))
-            if sell_qty > 0:
-                orders.append(Order(product, best_bid, -sell_qty))
-                position -= sell_qty
+            if best_ask <= fair - 2 and position < 120:
+                buy_qty = self.clamp_buy(position, limit, min(30, -depth.sell_orders[best_ask]))
+                if buy_qty > 0:
+                    orders.append(Order(product, best_ask, buy_qty))
+                    position += buy_qty
 
-        # 如果 best ask 低于双均线，主动买它
-        if best_ask <= fair - 2 and position < 120:
-            buy_qty = self.clamp_buy(position, limit, min(30, -depth.sell_orders[best_ask]))
-            if buy_qty > 0:
-                orders.append(Order(product, best_ask, buy_qty))
-                position += buy_qty
+        else:
+            if allow_buy and best_ask <= fair - 1 and position < 120:
+                buy_qty = self.clamp_buy(position, limit, min(25, -depth.sell_orders[best_ask]))
+                if buy_qty > 0:
+                    orders.append(Order(product, best_ask, buy_qty))
+                    position += buy_qty
 
-        # 被动挂单：根据 fair 调整 bid/ask
-        edge = max(6, (best_ask - best_bid)//2 - 1)
+            if allow_sell and best_bid >= fair + 1 and position > -120:
+                sell_qty = self.clamp_sell(position, limit, min(25, depth.buy_orders[best_bid]))
+                if sell_qty > 0:
+                    orders.append(Order(product, best_bid, -sell_qty))
+                    position -= sell_qty
+
+        edge = max(6, (best_ask - best_bid) // 2 - 1)
         buy_px = min(best_bid + 1, int(math.floor(fair - edge)))
         sell_px = max(best_ask - 1, int(math.ceil(fair + edge)))
 
-        if buy_px < best_ask and position < 120:
-            buy_qty = self.clamp_buy(position, limit, 20)
             if buy_qty > 0:
                 orders.append(Order(product, buy_px, buy_qty))
 
-        if sell_px > best_bid:
-            sell_qty = self.clamp_sell(position, limit, 20)
+        if allow_sell and sell_px > best_bid and position > -120:
+            sell_qty = self.clamp_sell(position, limit, 25)
             if sell_qty > 0:
                 orders.append(Order(product, sell_px, -sell_qty))
 
