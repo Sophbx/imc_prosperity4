@@ -448,29 +448,143 @@ class Trader:
 
         return orders
 
-    def trade_extract(self, state: TradingState, mem: Dict):
+    def trade_extract(self, state: TradingState, mem: Dict) -> Tuple[List[Order], Optional[float]]:
         product = "VELVETFRUIT_EXTRACT"
         depth = state.order_depths.get(product)
         if depth is None:
             return [], None
 
-        fair = self.fair_from_wall_and_ema(mem, product, depth, self.EXTRACT_ALPHA, 0.70)
-        if fair is None:
+        best_bid, best_ask = self.best_bid_ask(depth)
+        if best_bid is None or best_ask is None:
             return [], None
         
         mark_sig = self.mark_signal(state.market_trades.get(product, []),
                                     self.VE_ALPHA)
         fair += mark_sig
 
-        position = state.position.get(product, 0)
-        limit = self.POSITION_LIMITS[product]
+        mid = self.get_mid(depth)
+        wall = self.get_wall_mid(depth)
 
-        orders = []
-        orders += self.take_crossed_quotes(product, depth, fair, 1.0, position, limit)
-        pos_after = position + sum(o.quantity for o in orders)
-        orders += self.make_quotes(product, depth, fair, pos_after, limit, 1, 25, 0.08)
+        if mid is None and wall is None:
+            return [], None
+        if wall is None:
+            wall = mid
+        if mid is None:
+            mid = wall
+
+        ema = self.update_ema(mem, product, wall, 0.05)
+        ema_fast, ema_slow = self.update_ema_pair(
+            mem,
+            "VELVETFRUIT_EXTRACT_fast",
+            "VELVETFRUIT_EXTRACT_slow",
+            mid,
+        )
+
+        wall_signal = wall - mid
+        trend_signal = ema_fast - ema_slow
+
+    # softer fair
+        fair = 0.60 * wall + 0.25 * ema + 0.15 * mid + 0.35 * wall_signal
+
+        position = state.position.get(product, 0)
+
+        SOFT_CAP = 45
+        HARD_CAP = 75
+
+        orders: List[Order] = []
+        pos = position
+
+    # 1) only reduce inventory if position is already fairly large
+        if pos > 25 and trend_signal < -1.2:
+            sell_qty = min(pos - 20, depth.buy_orders.get(best_bid, 0))
+            if sell_qty > 0:
+                orders.append(Order(product, best_bid, -sell_qty))
+                pos -= sell_qty
+
+        if pos < -25 and trend_signal > 1.2:
+            buy_qty = min((-20 - pos), -depth.sell_orders.get(best_ask, 0))
+            if buy_qty > 0:
+                orders.append(Order(product, best_ask, buy_qty))
+                pos += buy_qty
+
+    # 2) aggressive taking with softer inventory adjustment
+        buy_edge = 0.7 + 0.012 * max(pos, 0)
+        sell_edge = 0.7 + 0.012 * max(-pos, 0)
+
+        if trend_signal < -2.0:
+            buy_edge += 0.4
+        if trend_signal > 2.0:
+            sell_edge += 0.4
+
+        for ask in sorted(depth.sell_orders.keys()):
+            ask_qty = -depth.sell_orders[ask]
+            if ask <= fair - buy_edge and pos < HARD_CAP:
+                qty = min(ask_qty, HARD_CAP - pos)
+                if qty > 0:
+                    orders.append(Order(product, ask, qty))
+                    pos += qty
+
+        for bid in sorted(depth.buy_orders.keys(), reverse=True):
+            bid_qty = depth.buy_orders[bid]
+            if bid >= fair + sell_edge and pos > -HARD_CAP:
+                qty = min(bid_qty, pos + HARD_CAP)
+                if qty > 0:
+                    orders.append(Order(product, bid, -qty))
+                    pos -= qty
+
+    # 3) passive making with milder skew
+        inv_skew = 0.05
+        fair_adj = fair - inv_skew * pos
+
+        quote_size = 18
+        if abs(pos) >= 25:
+            quote_size = 12
+        if abs(pos) >= 45:
+            quote_size = 7
+
+        buy_px = int(math.floor(fair_adj - 1))
+        sell_px = int(math.ceil(fair_adj + 1))
+
+        buy_px = min(buy_px, best_bid + 1)
+        sell_px = max(sell_px, best_ask - 1)
+
+        allow_buy = True
+        allow_sell = True
+
+        if pos >= SOFT_CAP:
+            allow_buy = False
+        if pos <= -SOFT_CAP:
+            allow_sell = False
+
+        if trend_signal < -1.6 and pos > 20:
+            allow_buy = False
+        if trend_signal > 1.6 and pos < -20:
+            allow_sell = False
+
+        if allow_buy and buy_px < best_ask:
+            buy_qty = min(quote_size, HARD_CAP - pos)
+            if buy_qty > 0:
+                orders.append(Order(product, buy_px, buy_qty))
+
+        if allow_sell and sell_px > best_bid:
+            sell_qty = min(quote_size, pos + HARD_CAP)
+            if sell_qty > 0:
+                orders.append(Order(product, sell_px, -sell_qty))
 
         return orders, fair
+    
+    def update_ema_pair(self, mem: Dict, key_fast: str, key_slow: str, x: float) -> Tuple[float, float]:
+        ema_map = mem["ema"]
+
+        prev_fast = ema_map.get(key_fast)
+        prev_slow = ema_map.get(key_slow)
+
+        fast = x if prev_fast is None else 0.18 * x + 0.82 * prev_fast
+        slow = x if prev_slow is None else 0.04 * x + 0.96 * prev_slow
+
+        ema_map[key_fast] = fast
+        ema_map[key_slow] = slow
+        return fast, slow
 
     def run(self, state: TradingState):
         
