@@ -1,11 +1,10 @@
+from operator import lt
+
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-PRICE_FILE = "prices_round_5_day_2.csv"
-TRADE_FILE = "trades_round_5_day_2.csv"
-
-OUT_DIR = Path("plots_selected_goods")
+OUT_DIR = Path("Round5/vs_day4")
 OUT_DIR.mkdir(exist_ok=True)
 
 GROUPS = {
@@ -16,8 +15,8 @@ GROUPS = {
 
 BASE_DIR = Path(__file__).resolve().parent
 
-PRICE_FILE = BASE_DIR / "prices_round_5_day_2.csv"
-TRADE_FILE = BASE_DIR / "trades_round_5_day_2.csv"
+PRICE_FILE = BASE_DIR / "prices_round_5_day_4.csv"
+TRADE_FILE = BASE_DIR / "trades_round_5_day_4.csv"
 
 print("Script directory:", BASE_DIR)
 print("Price file exists?", PRICE_FILE.exists())
@@ -89,17 +88,48 @@ for group_name, prefix in GROUPS.items():
     plt.savefig(OUT_DIR / f"{group_name}_spread.png", dpi=200)
     plt.show()
 
-    # 4. Order book volume
-    plt.figure(figsize=(12, 6))
-    for product, sub in p.groupby("product"):
-        plt.plot(sub["timestamp"], sub["book_volume"], label=product)
+    # 4. Top-of-book volume bands: bid-side vs ask-side dots
+    p["bid_top3_volume"] = (
+        p["bid_volume_1"].fillna(0)
+        + p["bid_volume_2"].fillna(0)
+        + p["bid_volume_3"].fillna(0)
+    )
 
-    plt.title(f"{group_name}: Total Top-3 Book Volume")
+    p["ask_top3_volume"] = (
+        p["ask_volume_1"].fillna(0)
+        + p["ask_volume_2"].fillna(0)
+        + p["ask_volume_3"].fillna(0)
+    )
+
+    plt.figure(figsize=(12, 6))
+
+    for product, sub in p.groupby("product"):
+        sub = sub.sort_values("timestamp")
+
+        plt.scatter(
+            sub["timestamp"],
+            sub["ask_top3_volume"],
+            s=8,
+            alpha=0.45,
+            label=f"{product} ask volume"
+        )
+
+        plt.scatter(
+            sub["timestamp"],
+            -sub["bid_top3_volume"],
+            s=8,
+            alpha=0.45,
+            label=f"{product} bid volume"
+        )
+
+    plt.axhline(0, linewidth=1)
+
+    plt.title(f"{group_name}: Top-3 Book Volume Bands")
     plt.xlabel("Timestamp")
-    plt.ylabel("Bid + Ask Volume")
-    plt.legend(fontsize=8)
+    plt.ylabel("Volume: ask above 0, bid below 0")
+    plt.legend(fontsize=7, ncol=2)
     plt.tight_layout()
-    plt.savefig(OUT_DIR / f"{group_name}_book_volume.png", dpi=200)
+    plt.savefig(OUT_DIR / f"{group_name}_volume_bands.png", dpi=200)
     plt.show()
 
     # 5. Trade prices
