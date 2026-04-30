@@ -163,7 +163,12 @@ class Trader:
         orders: List[Order] = []
 
         ema = self.update_ema(mem, product, mid, ema_alpha)
-        mark_adj = self.mark_signal(state.market_trades.get(product, []), alpha_map)
+        raw_mark = self.mark_signal(state.market_trades.get(product, []), alpha_map)
+
+        if product == "VELVETFRUIT_EXTRACT":
+            mark_adj = 0.5 * raw_mark
+        else:
+            mark_adj = raw_mark
 
         fair = 0.65 * mid + 0.35 * ema + mark_adj
         fair -= inv_skew * position
@@ -214,10 +219,10 @@ class Trader:
             "HYDROGEL_PACK",
             self.HP_ALPHA,
             ema_alpha=0.08,
-            take_edge=2.0,
-            quote_edge=6,
-            quote_size=25,
-            inv_skew=0.12,
+            take_edge=2.5,
+            quote_edge=7,
+            quote_size=20,
+            inv_skew=0.15,
         )
         if hp_orders:
             result["HYDROGEL_PACK"] = hp_orders
@@ -227,11 +232,11 @@ class Trader:
             mem,
             "VELVETFRUIT_EXTRACT",
             self.VE_ALPHA,
-            ema_alpha=0.10,
-            take_edge=1.0,
-            quote_edge=1,
-            quote_size=25,
-            inv_skew=0.08,
+            ema_alpha=0.05,
+            take_edge=3.0,
+            quote_edge=4,
+            quote_size=10,
+            inv_skew=0.18,
         )
         if ve_orders:
             result["VELVETFRUIT_EXTRACT"] = ve_orders
