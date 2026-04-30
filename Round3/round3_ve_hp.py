@@ -1,6 +1,7 @@
 from datamodel import Order, OrderDepth, TradingState
 from typing import Dict, List, Optional, Tuple
 import json
+import math
 
 
 SYM = "HYDROGEL_PACK"
@@ -46,6 +47,25 @@ class Trader:
     COOLDOWN_TIME = 1200
     RESET_Z = 0.35
 
+    POSITION_LIMITS = {
+    "HYDROGEL_PACK": 200,
+    "VELVETFRUIT_EXTRACT": 200,
+    }
+
+    HP_ALPHA = {
+        "Mark 14": 1.5,
+        "Mark 38": -1.5,
+    }  
+
+    VE_ALPHA = {
+        "Mark 67": 2.0,
+        "Mark 55": 0.4,
+        "Mark 01": 0.1,
+        "Mark 14": -0.7,
+        "Mark 22": -1.5,
+        "Mark 49": -1.8,
+    }
+
     def _load(self, td: str) -> Dict:
         if td:
             try:
@@ -56,6 +76,8 @@ class Trader:
                     data.setdefault("cooldown_until", -1)
                     data.setdefault("needs_reset", False)
                     data.setdefault("short_size", 0)
+                    data.setdefault("ema", {})
+                    data.setdefault("hist", {})
                     return data
             except Exception:
                 pass
@@ -66,6 +88,8 @@ class Trader:
             "cooldown_until": -1,
             "needs_reset": False,
             "short_size": 0,
+            "ema": {},
+            "hist": {},
         }
 
     def _save(self, data: Dict) -> str:
@@ -200,6 +224,27 @@ class Trader:
         std = math.sqrt(max(var, 1e-6))
 
         return mean, std
+    
+
+    def mark_signal(self, trades, alpha_map):
+        sig = 0.0
+        for t in trades:
+            if t.buyer in alpha_map:
+                sig += alpha_map[t.buyer]
+            if t.seller in alpha_map:
+                sig -= alpha_map[t.seller]
+        return max(-3.0, min(3.0, sig))
+
+    def best_bid_ask(self, depth):
+        bb = max(depth.buy_orders) if depth.buy_orders else None
+        ba = min(depth.sell_orders) if depth.sell_orders else None
+        return bb, ba
+
+    def get_mid(self, depth):
+        bb, ba = self.best_bid_ask(depth)
+        if bb is None or ba is None:
+            return None
+        return (bb + ba) / 2
 
     def make_quotes(
         self,
@@ -240,6 +285,10 @@ class Trader:
 
     def trade_hydrogel(self, state: TradingState, mem: Dict) -> List[Order]:
 
+        orders: List[Order] = []
+        allow_buy = True
+        allow_sell = True
+
         product = "HYDROGEL_PACK"
         depth = state.order_depths.get(product)
         if depth is None:
@@ -265,6 +314,10 @@ class Trader:
             return []
 
         fair = 0.50 * wall + 0.30 * short + 0.20 * long
+
+        mark_sig = self.mark_signal(state.market_trades.get(product, []),
+                                    self.HP_ALPHA)
+        fair += mark_sig
 
         if z > 1.2:
             fair -= 4
@@ -404,6 +457,10 @@ class Trader:
         fair = self.fair_from_wall_and_ema(mem, product, depth, self.EXTRACT_ALPHA, 0.70)
         if fair is None:
             return [], None
+        
+        mark_sig = self.mark_signal(state.market_trades.get(product, []),
+                                    self.VE_ALPHA)
+        fair += mark_sig
 
         position = state.position.get(product, 0)
         limit = self.POSITION_LIMITS[product]
@@ -416,7 +473,8 @@ class Trader:
         return orders, fair
 
     def run(self, state: TradingState):
-        mem = self.load_memory(state.traderData)
+        
+        mem = self._load(state.traderData)
 
         result: Dict[str, List[Order]] = {}
 
@@ -435,5 +493,5 @@ class Trader:
                     result[product] = voucher_orders
 
         conversions = 0
-        trader_data = self.save_memory(mem)
+        trader_data = self._save(mem)
         return result, conversions, trader_data
