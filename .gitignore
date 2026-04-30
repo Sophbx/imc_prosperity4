@@ -21,3 +21,10 @@ venv/
 .vscode/
 .idea/
 *.swp
+
+# Round 5 raw data — too big for git, regenerate locally from IMC dashboard
+Round5/Data/*.csv
+
+# Backtester run logs — too big for GitHub (>100MB), regenerate locally
+**/kevin_run.log
+**/rust_runs/
