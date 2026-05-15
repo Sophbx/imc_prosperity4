@@ -8,6 +8,11 @@ Round3/Manual/DESIGN.md
 Round3/Manual/PLAN.md
 Round3/Voucher/DESIGN.md
 Round3/Voucher/PLAN.md
+Round5/Manual/
+Round5/PEBBLES/basket_snap_v11_test/
+
+# IMC's copyrighted official wiki content — kept local for reference, not redistributed
+Official Wiki/
 
 # Python
 __pycache__/
@@ -25,6 +30,10 @@ venv/
 # Round 5 raw data — too big for git, regenerate locally from IMC dashboard
 Round5/Data/*.csv
 
+# Round 5 live competition submission log — local only
+Round5/result/
+
 # Backtester run logs — too big for GitHub (>100MB), regenerate locally
 **/kevin_run.log
 **/rust_runs/
+**/rust_runs_*/

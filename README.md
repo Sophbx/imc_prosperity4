@@ -4,11 +4,28 @@ Our team repository for the [IMC Prosperity 4](https://prosperity.imc.com/) algo
 
 ## The Team
 
-<!-- TODO: replace placeholder rows with real teammate info when we finalise the roster -->
-
-| Name | Links |
+| Name | Contact |
 |---|---|
-| Nick Zhu | [LinkedIn](TBD) · [GitHub](https://github.com/NickZhuxy) |
-| Sophia Gu | [LinkedIn](https://www.linkedin.com/in/sophia-gu-912bbb294/) · [GitHub](https://github.com/Sophbx)|
-| Kyrie Ma | [LinkedIn](https://www.linkedin.com/in/kyrie-ma-779391292/) |
-| William Wu| _TBD_ |
+| Nick Zhu | zhuxyparzival@gmail.com |
+| Sophia Gu | gusiyue.sophia@icloud.com |
+| Kyrie Ma | kyriemachn@gmail.com |
+| William Wu | zywu04@outlook.com |
+
+## Repository Layout
+
+Each round lives in its own folder. Trader submissions, analysis notebooks, and per-round writeups are co-located.
+
+```
+Round0/   Tutorial round
+Round1/   "Trading groundwork"
+Round2/   "Growing Your Outpost"
+Round3/   "Gloves Off" — vouchers + delta-1
+Round4/   "The More The Merrier" — multi-product
+Round5/   "Mystery Mix" — 50 products, no information
+```
+
+Round 5's final submission lives at `Round5/Submission/v14_robust/final_submission.py`.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
