@@ -26,6 +26,11 @@ Round5/   "Mystery Mix" — 50 products, no information
 
 Round 5's final submission lives at `Round5/Submission/v14_robust/final_submission.py`.
 
+## Useful Resources
+https://github.com/MarkBrezina/Ctrl-Alt-DefeatTheMarket
+
+https://github.com/rmtf1111/imc-prosperity-4
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
